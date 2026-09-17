@@ -19,6 +19,7 @@ import type { ProspectedPlaceDTO } from "@/app/api/v1/prospecting/searches/route
 import type { StatusLabel } from "@/lib/prospecting/score";
 import { paginateResults, totalResultPages } from "@/lib/prospecting/pagination";
 import { ArrowSquareOut, Warning } from "@/lib/ui/icons";
+import { buildWhatsAppLink, buildCsvContent } from "@/lib/prospecting/contact-utils";
 
 /**
  * Rótulo + variante de badge por faixa de score (`StatusLabel` de
@@ -109,6 +110,8 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
   const t = useT();
   const [page, setPage] = useState(1);
   const [places, setPlaces] = useState<ProspectedPlaceDTO[]>(initialPlaces);
+  const [reanalyzeLoadingIds, setReanalyzeLoadingIds] = useState<Set<string>>(new Set());
+  const [reanalyzeErrorId, setReanalyzeErrorId] = useState<string | null>(null);
 
   // Realtime: escuta updates na tabela prospected_places
   const handleRealtimeChange = useCallback(
@@ -120,6 +123,51 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
       }
     },
     [],
+  );
+
+  const handleExportCsv = useCallback(() => {
+    const csvContent = buildCsvContent(places);
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `prospeccao-${new Date().toISOString().split("T")[0]}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [places]);
+
+  const handleReanalyze = useCallback(
+    async (placeId: string) => {
+      setReanalyzeLoadingIds((prev) => new Set(prev).add(placeId));
+      setReanalyzeErrorId(null);
+
+      try {
+        const response = await fetch(`/api/v1/prospecting/places/${placeId}/reanalyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!response.ok) {
+          const errorData = (await response.json()) as { error?: string };
+          const errorMessage = errorData.error || t("Erro ao tentar novamente.");
+          setReanalyzeErrorId(placeId);
+          console.error(`Reanalyze failed for ${placeId}:`, errorMessage);
+        }
+        // On success, the Realtime subscription will update the place automatically
+      } catch (err) {
+        setReanalyzeErrorId(placeId);
+        console.error(`Reanalyze error for ${placeId}:`, err);
+      } finally {
+        setReanalyzeLoadingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(placeId);
+          return next;
+        });
+      }
+    },
+    [t],
   );
 
   useRealtimeChannel({
@@ -150,6 +198,14 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
               "Esta busca já traz o máximo de 60 resultados que a Google Places API permite por consulta. Para encontrar mais negócios, refine a busca — por bairro ou por um tipo mais específico de negócio — e busque de novo.",
             )}
           </p>
+        </div>
+      ) : null}
+
+      {places.length > 0 ? (
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleExportCsv}>
+            {t("Exportar CSV")}
+          </Button>
         </div>
       ) : null}
 
@@ -223,7 +279,53 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                     <TableCell>
                       <Badge variant={meta.variant}>{t(meta.label)}</Badge>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">—</TableCell>
+                    <TableCell className="flex gap-2">
+                      {/* WhatsApp button */}
+                      {buildWhatsAppLink(place.phoneNumber, place.name) ? (
+                        <a
+                          href={buildWhatsAppLink(place.phoneNumber, place.name) || "#"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent underline underline-offset-2 hover:bg-accent/10"
+                          title={t("Enviar mensagem no WhatsApp")}
+                        >
+                          {t("WhatsApp")}
+                        </a>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-muted-foreground opacity-50"
+                          title={t("Telefone não disponível")}
+                        >
+                          {t("WhatsApp")}
+                        </span>
+                      )}
+
+                      {/* Reanalyze button */}
+                      {place.siteAnalysisStatus === "failed" ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleReanalyze(place.id)}
+                          disabled={reanalyzeLoadingIds.has(place.id)}
+                          title={t("Tentar analisar novamente")}
+                          className="text-xs"
+                        >
+                          {reanalyzeLoadingIds.has(place.id) ? (
+                            <>
+                              <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                              {t("Tentando...")}
+                            </>
+                          ) : (
+                            t("Tentar de novo")
+                          )}
+                        </Button>
+                      ) : null}
+
+                      {/* Error message for reanalyze */}
+                      {reanalyzeErrorId === place.id ? (
+                        <span className="text-xs text-warning-fg">{t("Erro ao tentar")}</span>
+                      ) : null}
+                    </TableCell>
                   </TableRow>
                 );
               })

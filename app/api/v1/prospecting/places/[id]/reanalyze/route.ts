@@ -1,0 +1,129 @@
+/**
+ * POST /api/v1/prospecting/places/[id]/reanalyze — T11 (manual retry)
+ *
+ * Retries site analysis for a failed prospected place. Only allowed when
+ * `site_analysis_status === 'failed'`. Marks the place back to 'pending' and
+ * emits a new `prospected_place.site_quality_requested` event for the worker
+ * to process again.
+ *
+ * Reuses the same event-emission mechanism from T4 (searches/route.ts).
+ */
+
+import { randomUUID } from "node:crypto";
+import type { NextRequest } from "next/server";
+
+import { ok, fail } from "@/lib/api/wrappers";
+import { audit } from "@/lib/audit";
+import { requireRole } from "@/lib/auth/require-role";
+import { traduzir } from "@/lib/i18n/dicionario";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
+
+import {
+  PLACES_SELECT_COLUNAS,
+  type ProspectedPlaceRow,
+} from "../../searches/route";
+
+export const dynamic = "force-dynamic";
+
+export async function POST(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+): Promise<Response> {
+  const requestId = randomUUID();
+  const { id: placeId } = await params;
+
+  // Same gate as T4 (search creation): manager+ to trigger analysis
+  const authz = await requireRole("manager", { requestId, resource: "prospected_places" });
+  if (!authz.ok) return authz.response;
+  const t = (texto: string) => traduzir(texto, authz.user.idioma);
+  const { user, org } = authz;
+
+  const admin = createAdminClient();
+
+  // Fetch the place: explicit organization_id filter + RLS makes cross-tenant
+  // access return 404 (same pattern as searches/[id]/route.ts)
+  const { data: place, error: fetchErr } = await admin
+    .from("prospected_places")
+    .select(PLACES_SELECT_COLUNAS)
+    .eq("id", placeId)
+    .eq("organization_id", org.orgId)
+    .maybeSingle();
+
+  if (fetchErr) {
+    return fail("internal_error", fetchErr.message, 500, { requestId });
+  }
+
+  if (!place) {
+    return fail("not_found", t("Lugar não encontrado."), 404, { requestId });
+  }
+
+  const placeRow = place as unknown as ProspectedPlaceRow;
+
+  // Only allow reanalysis if the place failed analysis
+  if (placeRow.site_analysis_status !== "failed") {
+    return fail(
+      "not_reanalyzable",
+      t(
+        "Este lugar não pode ser analisado novamente. Só é possível tentar novamente quando a análise falhou."
+      ),
+      409,
+      { requestId }
+    );
+  }
+
+  // Update status back to pending
+  const { error: updateErr } = await admin
+    .from("prospected_places")
+    .update({ site_analysis_status: "pending" })
+    .eq("id", placeId)
+    .eq("organization_id", org.orgId);
+
+  if (updateErr) {
+    return fail(
+      "internal_error",
+      updateErr.message ?? t("Erro ao atualizar o lugar."),
+      500,
+      { requestId }
+    );
+  }
+
+  // Emit the same event as T4 does for new places
+  const emitResult = await admin.rpc("emit_event", {
+    p_event_type: "prospected_place.site_quality_requested",
+    p_entity_kind: "prospected_place",
+    p_entity_id: placeRow.id,
+    p_payload: {
+      prospected_place_id: placeRow.id,
+      search_id: placeRow.search_id,
+      place_id: placeRow.place_id,
+      website_url: placeRow.website_url,
+    },
+    p_metadata: { request_id: requestId, actor_user_id: user.id },
+    p_organization_id: org.orgId,
+  });
+
+  if (emitResult.error) {
+    console.error("[prospecting.reanalyze] emit_event falhou", {
+      prospectedPlaceId: placeId,
+      error: emitResult.error.message,
+    });
+    // Don't fail the response if emit fails — the update already happened.
+    // The worker might miss this event, but manual retry is always possible.
+  }
+
+  void audit({
+    action: "prospecting.place_reanalyze",
+    actorUserId: user.id,
+    organizationId: org.orgId,
+    resourceType: "prospected_place",
+    resourceId: placeId,
+    requestId,
+    metadata: {
+      search_id: placeRow.search_id,
+      place_id: placeRow.place_id,
+    },
+  });
+
+  return ok({ id: placeId, status: "pending" }, { status: 200, requestId });
+}

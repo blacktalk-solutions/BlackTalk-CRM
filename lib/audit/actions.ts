@@ -467,6 +467,10 @@ export const AUDIT_ACTIONS = [
   // N `prospected_places`) — "quem gastou a cota da Google e quando" só tem
   // resposta nesta trilha.
   "prospecting.search_run",
+
+  // Prospecção: retry manual de análise (T11). Uma linha já analisada que
+  // falhou é retentada — "quem acionou a rearrumação e quando" é rastreável.
+  "prospecting.place_reanalyze",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */
