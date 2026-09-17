@@ -56,17 +56,37 @@ export interface ScoreResult {
   label: StatusLabel;
 }
 
+/** Constantes da fórmula para auditoria. */
+const SCORE_BASE_SEM_SITE = 90;
+const SCORE_BASE_COM_SITE = 30;
+const SCORE_BASE_INALCANCAVEL = 85;
+const SCORE_BASE_LENTO_OU_NAO_RESPONSIVO = 55;
+const SCORE_BASE_BOM = 20;
+const SCORE_AJUSTE_BONUS_ALTO = 10; // rating >= 4.5 && reviewCount >= 20
+const SCORE_AJUSTE_BONUS_MEDIO = 5; // rating >= 4.0
+const SCORE_AJUSTE_PENALIDADE_POUCOS_REVIEWS = -10; // reviewCount < 5
+const SCORE_LIMITE_QUENTE = 70; // >= 70 é "quente"
+const SCORE_LIMITE_OPORTUNIDADE = 40; // >= 40 && < 70 é "oportunidade"
+const RATING_LIMITE_BONUS_ALTO = 4.5;
+const RATING_LIMITE_BONUS_MEDIO = 4.0;
+const REVIEW_COUNT_PARA_BONUS_ALTO = 20;
+const REVIEW_COUNT_LIMITE_PENALIDADE = 5;
+const LOAD_TIME_LIMITE_MS = 3000;
+
 /**
  * Rótulo de faixa de score.
  *
  * Limites exatos:
- * - 70+ → "quente"
- * - 40-69 → "oportunidade"
- * - 0-39 → "baixa"
+ * - >= SCORE_LIMITE_QUENTE (70) → "quente"
+ * - >= SCORE_LIMITE_OPORTUNIDADE (40) && < SCORE_LIMITE_QUENTE → "oportunidade"
+ * - < SCORE_LIMITE_OPORTUNIDADE → "baixa"
+ *
+ * Exportado para testes de limite diretos em valores que a fórmula não alcança
+ * (p.ex., 39, 69) mas cuja classificação precisa ser auditável.
  */
-function labelFromScore(score: number): StatusLabel {
-  if (score >= 70) return "quente";
-  if (score >= 40) return "oportunidade";
+export function labelFromScore(score: number): StatusLabel {
+  if (score >= SCORE_LIMITE_QUENTE) return "quente";
+  if (score >= SCORE_LIMITE_OPORTUNIDADE) return "oportunidade";
   return "baixa";
 }
 
@@ -74,9 +94,9 @@ function labelFromScore(score: number): StatusLabel {
  * Calcula ajuste de rating/reviews.
  *
  * Regras:
- * - +10 se rating >= 4.5 && reviewCount >= 20
- * - senão +5 se rating >= 4.0
- * - -10 se reviewCount !== undefined && reviewCount < 5
+ * - +SCORE_AJUSTE_BONUS_ALTO (10) se rating >= RATING_LIMITE_BONUS_ALTO (4.5) && reviewCount >= REVIEW_COUNT_PARA_BONUS_ALTO (20)
+ * - senão +SCORE_AJUSTE_BONUS_MEDIO (5) se rating >= RATING_LIMITE_BONUS_MEDIO (4.0)
+ * - -SCORE_AJUSTE_PENALIDADE_POUCOS_REVIEWS (10) se reviewCount !== undefined && reviewCount < REVIEW_COUNT_LIMITE_PENALIDADE (5)
  * - ausência de rating/reviewCount → nenhum ajuste
  *
  * A devolução é aditiva: somas antes do clamp.
@@ -88,16 +108,16 @@ function calcularAjuste(input: ScoreInput): number {
   const temReviewCount = input.reviewCount !== undefined;
 
   // Bonificação por rating alto + reviews suficientes
-  if (temRating && temReviewCount && input.rating >= 4.5 && input.reviewCount >= 20) {
-    ajuste += 10;
-  } else if (temRating && input.rating >= 4.0) {
+  if (temRating && temReviewCount && input.rating >= RATING_LIMITE_BONUS_ALTO && input.reviewCount >= REVIEW_COUNT_PARA_BONUS_ALTO) {
+    ajuste += SCORE_AJUSTE_BONUS_ALTO;
+  } else if (temRating && input.rating >= RATING_LIMITE_BONUS_MEDIO) {
     // Bonificação por rating bom, mesmo que reviews < 20
-    ajuste += 5;
+    ajuste += SCORE_AJUSTE_BONUS_MEDIO;
   }
 
   // Penalidade por poucos reviews (descredibilidade)
-  if (temReviewCount && input.reviewCount < 5) {
-    ajuste -= 10;
+  if (temReviewCount && input.reviewCount < REVIEW_COUNT_LIMITE_PENALIDADE) {
+    ajuste += SCORE_AJUSTE_PENALIDADE_POUCOS_REVIEWS;
   }
 
   return ajuste;
@@ -107,8 +127,8 @@ function calcularAjuste(input: ScoreInput): number {
  * Score inicial: antes de análise do site.
  *
  * Base:
- * - Sem site (hasWebsite === false) → 90 (prospect "quente" por ausência de concorrência digital)
- * - Com site (hasWebsite === true) → 30 (score neutro/provisório, até `scoreFinal`)
+ * - Sem site (hasWebsite === false) → SCORE_BASE_SEM_SITE (90, "prospect quente" por ausência de concorrência digital)
+ * - Com site (hasWebsite === true) → SCORE_BASE_COM_SITE (30, score neutro/provisório até `scoreFinal`)
  *
  * Depois: aplicar ajuste de rating/reviews e clampear a 0-100.
  *
@@ -116,7 +136,7 @@ function calcularAjuste(input: ScoreInput): number {
  * @returns Score (0-100) e rótulo ("quente" | "oportunidade" | "baixa").
  */
 export function scoreInitial(input: ScoreInput): ScoreResult {
-  const base = input.hasWebsite ? 30 : 90;
+  const base = input.hasWebsite ? SCORE_BASE_COM_SITE : SCORE_BASE_SEM_SITE;
   const ajuste = calcularAjuste(input);
   const bruto = base + ajuste;
   const score = Math.max(0, Math.min(100, bruto));
@@ -131,11 +151,11 @@ export function scoreInitial(input: ScoreInput): ScoreResult {
  * Score final: com análise do site.
  *
  * Base (determinada pela análise do site):
- * - Inalcançável (reachable === false) → 85 (oportunidade: sem concorrência online)
+ * - Inalcançável (reachable === false) → SCORE_BASE_INALCANCAVEL (85, oportunidade: sem concorrência online)
  * - Alcançável, mas não-responsivo ou lento:
- *   - mobileResponsive === false OU loadTimeMs > 3000 → 55
+ *   - mobileResponsive === false OU loadTimeMs > LOAD_TIME_LIMITE_MS (3000) → SCORE_BASE_LENTO_OU_NAO_RESPONSIVO (55)
  *   - (Nota: undefined mobileResponsive é tratado como false/"não comprovado")
- * - Alcançável, responsivo (true), rápido (<= 3000ms) → 20 (já está bem, pouco margem)
+ * - Alcançável, responsivo (true), rápido (<= LOAD_TIME_LIMITE_MS) → SCORE_BASE_BOM (20, já está bem, pouco margem)
  *
  * Depois: aplicar ajuste de rating/reviews e clampear a 0-100.
  *
@@ -152,19 +172,19 @@ export function scoreFinal(
 
   if (!siteAnalysis.reachable) {
     // Site inalcançável: boa oportunidade
-    base = 85;
+    base = SCORE_BASE_INALCANCAVEL;
   } else {
     // Site alcançável: avaliar responsividade + performance
     // Nota: undefined mobileResponsive é tratado como "não comprovado" = false
     const ehResponsivo = siteAnalysis.mobileResponsive === true;
-    const temCarregamentoRapido = (siteAnalysis.loadTimeMs ?? Infinity) <= 3000;
+    const temCarregamentoRapido = (siteAnalysis.loadTimeMs ?? Infinity) <= LOAD_TIME_LIMITE_MS;
 
     if (ehResponsivo && temCarregamentoRapido) {
       // Site bom: pouco margem de melhoria
-      base = 20;
+      base = SCORE_BASE_BOM;
     } else {
       // Site ruim (não-responsivo OU lento): oportunidade clara
-      base = 55;
+      base = SCORE_BASE_LENTO_OU_NAO_RESPONSIVO;
     }
   }
 
