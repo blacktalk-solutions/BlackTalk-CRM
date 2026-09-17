@@ -170,48 +170,57 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
 
   const admin = createAdminClient();
 
-  const { data, error } = await admin
-    .from("prospected_places")
-    .select("id, organization_id, website_url, rating, review_count, site_analysis_status")
-    .eq("id", prospectedPlaceId)
-    .eq("organization_id", row.organization_id)
-    .maybeSingle();
-  if (error) return { consumer_key, status: "error", detail: error.message };
-
-  const place = data as ProspectedPlaceRow | null;
-  if (!place) return { consumer_key, status: "skipped", detail: "prospected_place not found" };
-  if (!place.website_url) {
-    // Invariante: a rota de busca (T4) só emite este evento para linhas COM
-    // site. Chegar aqui sem `website_url` não deveria acontecer — guarda
-    // defensiva, não um caminho esperado.
-    return { consumer_key, status: "skipped", detail: "no website_url" };
-  }
-
-  // ─── GUARD DE IDEMPOTÊNCIA (aplicação, não constraint de banco) ───────────
-  // 'done'/'processing' → já concluído ou já em voo: no-op, conta como
-  // sucesso vazio (o evento é marcado consumido normalmente pelo drain).
-  if (place.site_analysis_status === "done" || place.site_analysis_status === "processing") {
-    return { consumer_key, status: "skipped", detail: `already ${place.site_analysis_status}` };
-  }
-
-  // Claim otimista (mesmo espírito do claim de `event_log` em drain.ts):
-  // só avança se o UPDATE realmente casar a linha no status que acabamos de
-  // ler. Se outra execução concorrente (reanalyze duplicado, retry) já
-  // moveu a linha para 'processing' entre o SELECT e aqui, `claimed` vem
-  // vazio e tratamos como no-op em vez de rodar o Playwright duas vezes.
-  const { data: claimed, error: claimErr } = await admin
-    .from("prospected_places")
-    .update({ site_analysis_status: "processing" })
-    .eq("id", place.id)
-    .eq("organization_id", place.organization_id)
-    .eq("site_analysis_status", place.site_analysis_status)
-    .select("id");
-  if (claimErr) return { consumer_key, status: "error", detail: claimErr.message };
-  if (!claimed?.length) {
-    return { consumer_key, status: "skipped", detail: "concurrent claim lost" };
-  }
-
+  // A leitura inicial, o claim otimista e a análise inteira vivem dentro do
+  // MESMO try: um erro `{data, error}` estruturado do Postgrest (branches
+  // `if (error) return ...` abaixo) continua tratado como antes, sem tocar
+  // no status da linha — mas uma exceção de VERDADE (throw — falha de rede
+  // no client Supabase, por exemplo) em QUALQUER um desses passos agora cai
+  // no catch de baixo e grava `site_analysis_status='failed'`, em vez de
+  // escapar sem deixar rastro na linha (achado do code review da Task 8: o
+  // dispatcher já protege o PROCESSO, mas não persiste o 'failed' — quem
+  // faz isso é este catch).
   try {
+    const { data, error } = await admin
+      .from("prospected_places")
+      .select("id, organization_id, website_url, rating, review_count, site_analysis_status")
+      .eq("id", prospectedPlaceId)
+      .eq("organization_id", row.organization_id)
+      .maybeSingle();
+    if (error) return { consumer_key, status: "error", detail: error.message };
+
+    const place = data as ProspectedPlaceRow | null;
+    if (!place) return { consumer_key, status: "skipped", detail: "prospected_place not found" };
+    if (!place.website_url) {
+      // Invariante: a rota de busca (T4) só emite este evento para linhas COM
+      // site. Chegar aqui sem `website_url` não deveria acontecer — guarda
+      // defensiva, não um caminho esperado.
+      return { consumer_key, status: "skipped", detail: "no website_url" };
+    }
+
+    // ─── GUARD DE IDEMPOTÊNCIA (aplicação, não constraint de banco) ─────────
+    // 'done'/'processing' → já concluído ou já em voo: no-op, conta como
+    // sucesso vazio (o evento é marcado consumido normalmente pelo drain).
+    if (place.site_analysis_status === "done" || place.site_analysis_status === "processing") {
+      return { consumer_key, status: "skipped", detail: `already ${place.site_analysis_status}` };
+    }
+
+    // Claim otimista (mesmo espírito do claim de `event_log` em drain.ts):
+    // só avança se o UPDATE realmente casar a linha no status que acabamos de
+    // ler. Se outra execução concorrente (reanalyze duplicado, retry) já
+    // moveu a linha para 'processing' entre o SELECT e aqui, `claimed` vem
+    // vazio e tratamos como no-op em vez de rodar o Playwright duas vezes.
+    const { data: claimed, error: claimErr } = await admin
+      .from("prospected_places")
+      .update({ site_analysis_status: "processing" })
+      .eq("id", place.id)
+      .eq("organization_id", place.organization_id)
+      .eq("site_analysis_status", place.site_analysis_status)
+      .select("id");
+    if (claimErr) return { consumer_key, status: "error", detail: claimErr.message };
+    if (!claimed?.length) {
+      return { consumer_key, status: "skipped", detail: "concurrent claim lost" };
+    }
+
     const analysis = await runPlaywrightAnalysis(place.website_url);
 
     const scoreResult = scoreFinal({
@@ -247,12 +256,27 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
     return { consumer_key, status: "ok" };
   } catch (err) {
     // PROSPECT-11: timeout, site fora do ar, erro de navegação — e também
-    // qualquer erro inesperado no caminho de sucesso (ex.: a própria
-    // gravação de 'done' falhou) — tudo cai aqui. Nunca deixamos a exceção
-    // escapar pro dispatcher; sempre tentamos gravar 'failed' com o motivo.
+    // qualquer erro inesperado em QUALQUER passo do try acima (leitura
+    // inicial, claim otimista, análise, gravação de 'done') — tudo cai
+    // aqui. Nunca deixamos a exceção escapar pro dispatcher; sempre
+    // tentamos gravar 'failed' com o motivo.
+    //
+    // Usa `prospectedPlaceId`/`row.organization_id` (conhecidos ANTES do
+    // try) em vez de `place.id`/`place.organization_id`: `place` é
+    // block-scoped dentro do try e pode nem existir ainda se foi a própria
+    // leitura inicial que lançou. Os dois pares são equivalentes quando
+    // `place` existe (é exatamente o que a leitura filtrou por `.eq()`).
+    //
+    // Trade-off aceito conscientemente: se a exceção veio da LEITURA (antes
+    // de sabermos o status atual) ou do CLAIM, gravamos 'failed' sem
+    // confirmar que a linha não tinha acabado de virar 'done' por outro
+    // caminho no mesmo instante — uma janela de corrida estreitíssima (só
+    // existe se dois eventos distintos pra mesma linha estiverem em voo ao
+    // mesmo tempo, o que T11/reanalyze pode em tese causar). Preferível a
+    // deixar a linha presa sem nenhum sinal de que algo deu errado.
     const detail = err instanceof Error ? err.message : String(err);
     logger.error("[prospecting-site-quality] análise falhou", {
-      prospected_place_id: place.id,
+      prospected_place_id: prospectedPlaceId,
       detail,
     });
 
@@ -265,8 +289,8 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
         // falha, não zerar/recalcular. A UI lê `scoreFinal ?? scoreInitial`.
         site_analysis_result: { reachable: false, error: detail },
       })
-      .eq("id", place.id)
-      .eq("organization_id", place.organization_id);
+      .eq("id", prospectedPlaceId)
+      .eq("organization_id", row.organization_id);
 
     if (failErr) {
       // Pior caso: nem a gravação de 'failed' foi possível (banco fora do
@@ -275,7 +299,7 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
       // em drain.ts). Devolver "error" deixa o dispatcher tentar de novo;
       // documentado como limitação conhecida no relatório da Task 8.
       logger.error("[prospecting-site-quality] gravação de 'failed' também falhou", {
-        prospected_place_id: place.id,
+        prospected_place_id: prospectedPlaceId,
         detail: failErr.message,
       });
       return { consumer_key, status: "error", detail: `${detail}; also failed to persist: ${failErr.message}` };

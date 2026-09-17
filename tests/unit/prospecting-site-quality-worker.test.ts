@@ -6,6 +6,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // factories ficam ANTES dos `vi.mock` no texto para não depender de
 // `vi.hoisted`, e os imports "de verdade" (inclusive tipos) só entram DEPOIS
 // dos `vi.mock`, também espelhando o arquivo de referência.
+//
+// Movido de `workers/prospecting-site-quality-worker.test.ts` pro local real
+// de todo teste de worker deste repo (`tests/unit/`) — os outros 8 testes de
+// worker existentes (media-persist-worker, media-derive-worker,
+// ai-response-worker-*, lgpd-*, agenda-google-*-worker) já vivem aqui; o
+// brief original da Task 8 pedia co-locado em `workers/`, mas isso não batia
+// com nenhum teste de worker já existente no repo — ruling do orquestrador
+// depois do code review. Nenhum import precisou mudar: todos usam alias `@/`,
+// não caminho relativo.
 
 // ─── Playwright: NUNCA abre um browser de verdade no teste ─────────────────
 const gotoMock = vi.fn();
@@ -41,6 +50,11 @@ vi.mock("playwright", () => ({
 // O dublê distingue (2) de (3) pelo PRÓPRIO patch (`site_analysis_status ===
 // "processing"` só acontece no claim) — não por contagem de chamada, então a
 // ordem dos testes não importa.
+//
+// `selectThrows`/`claimThrows`: simulam uma exceção de VERDADE (não um
+// `{data, error}` estruturado) escapando da leitura inicial ou do claim —
+// cenário do Important #1 do code review: o worker precisa capturar isso e
+// gravar 'failed', não deixar escapar.
 interface PlaceRowFixture {
   id: string;
   organization_id: string;
@@ -54,14 +68,18 @@ const updateSpy = vi.fn();
 const state: {
   placeRow: PlaceRowFixture | null;
   placeError: { message: string } | null;
+  selectThrows: Error | null;
   claimOk: boolean;
   claimError: { message: string } | null;
+  claimThrows: Error | null;
   finalUpdateError: { message: string } | null;
 } = {
   placeRow: null,
   placeError: null,
+  selectThrows: null,
   claimOk: true,
   claimError: null,
+  claimThrows: null,
   finalUpdateError: null,
 };
 
@@ -73,7 +91,10 @@ vi.mock("@/lib/supabase/admin", () => ({
         select: (_cols: string) => ({
           eq: () => ({
             eq: () => ({
-              maybeSingle: async () => ({ data: state.placeRow, error: state.placeError }),
+              maybeSingle: async () => {
+                if (state.selectThrows) throw state.selectThrows;
+                return { data: state.placeRow, error: state.placeError };
+              },
             }),
           }),
         }),
@@ -85,10 +106,13 @@ vi.mock("@/lib/supabase/admin", () => ({
               eq: () => ({
                 eq: () => ({
                   eq: () => ({
-                    select: async (_cols: string) => ({
-                      data: state.claimOk ? [{ id: state.placeRow?.id }] : [],
-                      error: state.claimError,
-                    }),
+                    select: async (_cols: string) => {
+                      if (state.claimThrows) throw state.claimThrows;
+                      return {
+                        data: state.claimOk ? [{ id: state.placeRow?.id }] : [],
+                        error: state.claimError,
+                      };
+                    },
                   }),
                 }),
               }),
@@ -147,8 +171,10 @@ describe("analyzeProspectSiteQuality", () => {
     vi.clearAllMocks();
     state.placeRow = placeRow();
     state.placeError = null;
+    state.selectThrows = null;
     state.claimOk = true;
     state.claimError = null;
+    state.claimThrows = null;
     state.finalUpdateError = null;
     innerTextMock.mockResolvedValue("");
   });
@@ -206,7 +232,7 @@ describe("analyzeProspectSiteQuality", () => {
     expect(patch).not.toHaveProperty("email");
   });
 
-  it("3. timeout/site inalcançável → failed, score_final e status_label NÃO tocados (mantém score inicial do P1)", async () => {
+  it("3. timeout/site inalcançável (goto lança) → failed, score_final e status_label NÃO tocados (mantém score inicial do P1)", async () => {
     gotoMock.mockRejectedValue(new Error("Timeout 15000ms exceeded."));
 
     const result = await analyzeProspectSiteQuality(eventRow());
@@ -296,6 +322,72 @@ describe("analyzeProspectSiteQuality", () => {
       consumer_key: "prospecting_site_quality_v1",
       status: "skipped",
       detail: "concurrent claim lost",
+    });
+    expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  it("9. goto() RESOLVE com HTTP 500 (não lança) → 'done' (não 'failed'), score recalculado com reachable:false", async () => {
+    // Distinção central do worker (comentário de topo do arquivo): uma
+    // resposta HTTP de erro NÃO é uma exceção de navegação — o Playwright
+    // conseguiu "responder". Isso é análise BEM-SUCEDIDA com reachable:false,
+    // não uma falha (PROSPECT-11 só cobre timeout/site fora do ar/erro de
+    // navegação — nenhum dos três aconteceu aqui).
+    gotoMock.mockResolvedValue({ status: () => 500 });
+    contentMock.mockResolvedValue(
+      '<html><head><meta name="viewport" content="width=device-width"></head><body>erro 500</body></html>',
+    );
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result).toEqual({ consumer_key: "prospecting_site_quality_v1", status: "ok" });
+
+    const esperado = scoreFinal({
+      hasWebsite: true,
+      rating: 4.8,
+      reviewCount: 25,
+      siteAnalysis: { reachable: false, mobileResponsive: true, loadTimeMs: 0 },
+    });
+    const patch = lastUpdatePatch();
+    expect(patch).toMatchObject({
+      site_analysis_status: "done",
+      score_final: esperado.score,
+      status_label: esperado.label,
+      site_analysis_result: expect.objectContaining({ reachable: false, mobileResponsive: true }),
+    });
+    // Não é o caminho de falha: não deve ter `error` no resultado da análise.
+    expect(patch.site_analysis_result).not.toHaveProperty("error");
+
+    expect(contextCloseMock).toHaveBeenCalledTimes(1);
+    expect(browserCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("10. leitura inicial lança uma exceção de VERDADE (não {data,error}) → mesmo assim grava 'failed', não escapa pro dispatcher", async () => {
+    state.selectThrows = new Error("fetch failed: ECONNRESET");
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    const patch = lastUpdatePatch();
+    expect(patch.site_analysis_status).toBe("failed");
+    expect(patch.site_analysis_result).toMatchObject({
+      reachable: false,
+      error: expect.stringContaining("ECONNRESET"),
+    });
+    // Nem chegou perto do Playwright — a exceção veio antes de qualquer claim.
+    expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  it("11. claim otimista lança uma exceção de VERDADE (não {data,error}) → mesmo assim grava 'failed'", async () => {
+    state.claimThrows = new Error("fetch failed: ETIMEDOUT");
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    const patch = lastUpdatePatch();
+    expect(patch.site_analysis_status).toBe("failed");
+    expect(patch.site_analysis_result).toMatchObject({
+      reachable: false,
+      error: expect.stringContaining("ETIMEDOUT"),
     });
     expect(launchMock).not.toHaveBeenCalled();
   });
