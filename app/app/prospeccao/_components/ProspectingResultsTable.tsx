@@ -18,7 +18,7 @@ import { useRealtimeChannel } from "@/hooks/realtime/useRealtimeChannel";
 import type { ProspectedPlaceDTO } from "@/app/api/v1/prospecting/searches/route";
 import type { StatusLabel } from "@/lib/prospecting/score";
 import { paginateResults, totalResultPages } from "@/lib/prospecting/pagination";
-import { ArrowSquareOut, Warning } from "@/lib/ui/icons";
+import { ArrowSquareOut, Warning, ArrowRight } from "@/lib/ui/icons";
 import { buildWhatsAppLink, buildCsvContent } from "@/lib/prospecting/contact-utils";
 
 /**
@@ -64,6 +64,7 @@ export function applyPlaceUpdate(
     site_analysis_status: "siteAnalysisStatus",
     site_analysis_result: "siteAnalysisResult",
     email: "email",
+    promoted_lead_id: "promotedLeadId",
   };
 
   const newPlaces = [...currentPlaces];
@@ -112,6 +113,8 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
   const [places, setPlaces] = useState<ProspectedPlaceDTO[]>(initialPlaces);
   const [reanalyzeLoadingIds, setReanalyzeLoadingIds] = useState<Set<string>>(new Set());
   const [reanalyzeErrorMap, setReanalyzeErrorMap] = useState<Map<string, string>>(new Map());
+  const [promoteLoadingIds, setPromoteLoadingIds] = useState<Set<string>>(new Set());
+  const [promoteErrorMap, setPromoteErrorMap] = useState<Map<string, string>>(new Map());
 
   // Realtime: escuta updates na tabela prospected_places
   const handleRealtimeChange = useCallback(
@@ -165,6 +168,53 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
         console.error(`Reanalyze error for ${placeId}:`, err);
       } finally {
         setReanalyzeLoadingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(placeId);
+          return next;
+        });
+      }
+    },
+    [t],
+  );
+
+  const handlePromote = useCallback(
+    async (placeId: string) => {
+      setPromoteLoadingIds((prev) => new Set(prev).add(placeId));
+      setPromoteErrorMap((prev) => {
+        const next = new Map(prev);
+        next.delete(placeId);
+        return next;
+      });
+
+      try {
+        const response = await fetch(`/api/v1/prospecting/places/${placeId}/promote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!response.ok) {
+          const errorData = (await response.json()) as { error?: { message?: string } };
+          const errorMessage = errorData.error?.message || t("Erro ao promover resultado.");
+          setPromoteErrorMap((prev) => new Map(prev).set(placeId, errorMessage));
+          console.error(`Promote failed for ${placeId}:`, errorMessage);
+          return;
+        }
+
+        // On success, update local state with the leadId
+        const successData = (await response.json()) as { data?: { leadId?: string } };
+        const leadId = successData.data?.leadId;
+        if (leadId) {
+          setPlaces((current) =>
+            current.map((place) =>
+              place.id === placeId ? { ...place, promotedLeadId: leadId } : place,
+            ),
+          );
+        }
+      } catch (err) {
+        setPromoteErrorMap((prev) => new Map(prev).set(placeId, t("Erro de conexão")));
+        console.error(`Promote error for ${placeId}:`, err);
+      } finally {
+        setPromoteLoadingIds((prev) => {
           const next = new Set(prev);
           next.delete(placeId);
           return next;
@@ -285,51 +335,86 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                     <TableCell>
                       <Badge variant={meta.variant}>{t(meta.label)}</Badge>
                     </TableCell>
-                    <TableCell className="flex gap-2">
-                      {/* WhatsApp button */}
-                      {whatsappLink ? (
-                        <a
-                          href={whatsappLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent underline underline-offset-2 hover:bg-accent/10"
-                          title={t("Enviar mensagem no WhatsApp")}
-                        >
-                          {t("WhatsApp")}
-                        </a>
-                      ) : (
-                        <span
-                          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-muted-foreground opacity-50"
-                          title={t("Telefone não disponível")}
-                        >
-                          {t("WhatsApp")}
-                        </span>
-                      )}
+                    <TableCell className="flex flex-col gap-1">
+                      <div className="flex gap-2">
+                        {/* WhatsApp button */}
+                        {whatsappLink ? (
+                          <a
+                            href={whatsappLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent underline underline-offset-2 hover:bg-accent/10"
+                            title={t("Enviar mensagem no WhatsApp")}
+                          >
+                            {t("WhatsApp")}
+                          </a>
+                        ) : (
+                          <span
+                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-muted-foreground opacity-50"
+                            title={t("Telefone não disponível")}
+                          >
+                            {t("WhatsApp")}
+                          </span>
+                        )}
 
-                      {/* Reanalyze button */}
-                      {place.siteAnalysisStatus === "failed" ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleReanalyze(place.id)}
-                          disabled={reanalyzeLoadingIds.has(place.id)}
-                          title={t("Tentar analisar novamente")}
-                          className="text-xs"
-                        >
-                          {reanalyzeLoadingIds.has(place.id) ? (
-                            <>
-                              <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                              {t("Tentando...")}
-                            </>
-                          ) : (
-                            t("Tentar de novo")
-                          )}
-                        </Button>
-                      ) : null}
+                        {/* Promote button or link to lead */}
+                        {place.promotedLeadId ? (
+                          <a
+                            href={`/app/leads/${place.promotedLeadId}`}
+                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-success-fg bg-success-bg/30 hover:bg-success-bg/50 transition-colors"
+                            title={t("Ver lead no funil")}
+                          >
+                            {t("No funil")}
+                            <ArrowRight size={12} aria-hidden />
+                          </a>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handlePromote(place.id)}
+                            disabled={promoteLoadingIds.has(place.id)}
+                            title={t("Promover para o funil")}
+                            className="text-xs"
+                          >
+                            {promoteLoadingIds.has(place.id) ? (
+                              <>
+                                <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                                {t("Promovendo...")}
+                              </>
+                            ) : (
+                              t("Promover")
+                            )}
+                          </Button>
+                        )}
 
-                      {/* Error message for reanalyze */}
+                        {/* Reanalyze button */}
+                        {place.siteAnalysisStatus === "failed" ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleReanalyze(place.id)}
+                            disabled={reanalyzeLoadingIds.has(place.id)}
+                            title={t("Tentar analisar novamente")}
+                            className="text-xs"
+                          >
+                            {reanalyzeLoadingIds.has(place.id) ? (
+                              <>
+                                <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                                {t("Tentando...")}
+                              </>
+                            ) : (
+                              t("Tentar de novo")
+                            )}
+                          </Button>
+                        ) : null}
+                      </div>
+
+                      {/* Error messages */}
                       {errorMessage ? (
                         <span className="text-xs text-warning-fg">{errorMessage}</span>
+                      ) : null}
+                      {promoteErrorMap.get(place.id) ? (
+                        <span className="text-xs text-warning-fg">{promoteErrorMap.get(place.id)}</span>
                       ) : null}
                     </TableCell>
                   </TableRow>

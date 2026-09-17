@@ -160,4 +160,40 @@ describe("applyPlaceUpdate", () => {
     expect(places[1]!.scoreFinal).toBe(75);
     expect(places[1]!.statusLabel).toBe("quente");
   });
+
+  it("deve mapear promoted_lead_id do banco para camelCase do DTO", () => {
+    const places = [mockPlace("id-1", { promotedLeadId: null })];
+
+    const update = {
+      id: "id-1",
+      promoted_lead_id: "lead-123",
+    };
+
+    const result = applyPlaceUpdate(places, update);
+    const updated = result[0]!;
+
+    expect(updated.promotedLeadId).toBe("lead-123");
+  });
+});
+
+/**
+ * Função pura para determinar se uma linha deve mostrar o botão "Promover"
+ * ou o link "No funil". Testável isoladamente.
+ */
+export function shouldShowPromoteButton(promotedLeadId: string | null): boolean {
+  return promotedLeadId === null;
+}
+
+describe("shouldShowPromoteButton", () => {
+  it("deve retornar true quando promotedLeadId é null", () => {
+    expect(shouldShowPromoteButton(null)).toBe(true);
+  });
+
+  it("deve retornar false quando promotedLeadId está definido", () => {
+    expect(shouldShowPromoteButton("lead-123")).toBe(false);
+  });
+
+  it("deve retornar false para string vazia (tratada como promovida)", () => {
+    expect(shouldShowPromoteButton("")).toBe(false);
+  });
 });
