@@ -111,7 +111,7 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
   const [page, setPage] = useState(1);
   const [places, setPlaces] = useState<ProspectedPlaceDTO[]>(initialPlaces);
   const [reanalyzeLoadingIds, setReanalyzeLoadingIds] = useState<Set<string>>(new Set());
-  const [reanalyzeErrorId, setReanalyzeErrorId] = useState<string | null>(null);
+  const [reanalyzeErrorMap, setReanalyzeErrorMap] = useState<Map<string, string>>(new Map());
 
   // Realtime: escuta updates na tabela prospected_places
   const handleRealtimeChange = useCallback(
@@ -141,7 +141,11 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
   const handleReanalyze = useCallback(
     async (placeId: string) => {
       setReanalyzeLoadingIds((prev) => new Set(prev).add(placeId));
-      setReanalyzeErrorId(null);
+      setReanalyzeErrorMap((prev) => {
+        const next = new Map(prev);
+        next.delete(placeId);
+        return next;
+      });
 
       try {
         const response = await fetch(`/api/v1/prospecting/places/${placeId}/reanalyze`, {
@@ -150,14 +154,14 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
         });
 
         if (!response.ok) {
-          const errorData = (await response.json()) as { error?: string };
-          const errorMessage = errorData.error || t("Erro ao tentar novamente.");
-          setReanalyzeErrorId(placeId);
+          const errorData = (await response.json()) as { error?: { message?: string } };
+          const errorMessage = errorData.error?.message || t("Erro ao tentar novamente.");
+          setReanalyzeErrorMap((prev) => new Map(prev).set(placeId, errorMessage));
           console.error(`Reanalyze failed for ${placeId}:`, errorMessage);
         }
         // On success, the Realtime subscription will update the place automatically
       } catch (err) {
-        setReanalyzeErrorId(placeId);
+        setReanalyzeErrorMap((prev) => new Map(prev).set(placeId, t("Erro de conexão")));
         console.error(`Reanalyze error for ${placeId}:`, err);
       } finally {
         setReanalyzeLoadingIds((prev) => {
@@ -239,6 +243,8 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
               linhasDaPagina.map((place) => {
                 const meta = STATUS_META[place.statusLabel as StatusLabel] ?? STATUS_META.baixa;
                 const score = place.scoreFinal ?? place.scoreInitial;
+                const whatsappLink = buildWhatsAppLink(place.phoneNumber, place.name);
+                const errorMessage = reanalyzeErrorMap.get(place.id);
                 return (
                   <TableRow key={place.id} data-testid="prospeccao-linha">
                     <TableCell className="max-w-[220px] truncate font-medium">
@@ -281,9 +287,9 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                     </TableCell>
                     <TableCell className="flex gap-2">
                       {/* WhatsApp button */}
-                      {buildWhatsAppLink(place.phoneNumber, place.name) ? (
+                      {whatsappLink ? (
                         <a
-                          href={buildWhatsAppLink(place.phoneNumber, place.name) || "#"}
+                          href={whatsappLink}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent underline underline-offset-2 hover:bg-accent/10"
@@ -322,8 +328,8 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                       ) : null}
 
                       {/* Error message for reanalyze */}
-                      {reanalyzeErrorId === place.id ? (
-                        <span className="text-xs text-warning-fg">{t("Erro ao tentar")}</span>
+                      {errorMessage ? (
+                        <span className="text-xs text-warning-fg">{errorMessage}</span>
                       ) : null}
                     </TableCell>
                   </TableRow>

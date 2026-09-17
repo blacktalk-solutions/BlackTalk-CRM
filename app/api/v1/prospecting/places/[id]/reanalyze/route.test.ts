@@ -1,108 +1,273 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-/**
- * Tests for POST /api/v1/prospecting/places/[id]/reanalyze
- *
- * Covers:
- * - Authorization (requireRole manager)
- * - 404 for non-existent place or wrong organization
- * - 409 for non-failed status (pending, processing, done, not_applicable)
- * - Success (updates status to pending, emits event)
- * - Audit logging
- */
+import { requireRole } from "@/lib/auth/require-role";
+import { audit } from "@/lib/audit";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { fail } from "@/lib/api/wrappers";
+import type { AuthUser } from "@/lib/auth/types";
 
-// Mock implementations would go here in a full test setup
-// For now, this serves as a spec for the test structure
+vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/audit", () => ({ audit: vi.fn(async () => undefined) }));
+
+const ORG_ID = "22222222-2222-4222-8222-222222222222";
+const USER_ID = "11111111-1111-4111-8111-111111111111";
+const PLACE_ID = "55555555-5555-4555-8555-555555555555";
+const SEARCH_ID = "33333333-3333-4333-8333-333333333333";
+
+function mockAuthzOk(role = "manager") {
+  const user = {
+    id: USER_ID,
+    email: "a@example.com",
+    full_name: null,
+    avatar_url: null,
+    is_platform_admin: false,
+    idioma: "pt-BR",
+    organizations: [{ organization_id: ORG_ID, organization_name: "Org", role }],
+  };
+  vi.mocked(requireRole).mockResolvedValue({
+    ok: true,
+    user,
+    org: { orgId: ORG_ID, name: "Org", role },
+  });
+}
+
+function placeRow(overrides = {}) {
+  return {
+    id: PLACE_ID,
+    search_id: SEARCH_ID,
+    place_id: "gp-1",
+    name: "Padaria Sol",
+    address: "Rua A, 1",
+    phone_number: "+551122223333",
+    phone_number_normalized: null,
+    website_url: "https://padariasol.com.br",
+    rating: 4.2,
+    review_count: 30,
+    score_initial: 70,
+    score_final: null,
+    status_label: "oportunidade",
+    site_analysis_status: "failed",
+    site_analysis_result: null,
+    email: null,
+    promoted_lead_id: null,
+    promoted_at: null,
+    ...overrides,
+  };
+}
+
+function makeAdminStub(cfg) {
+  const calls = { selectFilters: [], updateFilters: [] };
+  const client = {
+    from(table) {
+      if (table === "prospected_places") {
+        return {
+          select() {
+            return {
+              eq(col, val) {
+                calls.selectFilters.push([col, val]);
+                return {
+                  eq(col2, val2) {
+                    calls.selectFilters.push([col2, val2]);
+                    return {
+                      maybeSingle() {
+                        return Promise.resolve(cfg.selectResult ?? { data: null, error: null });
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+          update() {
+            return {
+              eq(col, val) {
+                calls.updateFilters.push([col, val]);
+                return {
+                  eq(col2, val2) {
+                    calls.updateFilters.push([col2, val2]);
+                    return Promise.resolve({ error: cfg.updateError ?? null });
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      throw new Error(`unexpected table ${table}`);
+    },
+    rpc(name, params) {
+      calls.rpcCall = { name, params };
+      return Promise.resolve({ data: null, error: cfg.rpcError ?? null });
+    },
+  };
+  return { client, calls };
+}
+
+function postReq(id) {
+  return new NextRequest(`http://localhost/api/v1/prospecting/places/${id}/reanalyze`, {
+    method: "POST",
+  });
+}
+
+function ctx(id) {
+  return { params: Promise.resolve({ id }) };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
-  describe("Authorization", () => {
-    it("should reject unauthorized users (requireRole manager)", () => {
-      // When: user without 'manager' role calls the endpoint
-      // Then: should return 403 Forbidden
+  it("sem role manager+ → 403", async () => {
+    vi.mocked(requireRole).mockResolvedValue({
+      ok: false,
+      response: fail("forbidden_role", "No", 403, {}),
     });
-
-    it("should accept users with 'manager' role", () => {
-      // When: user with 'manager' role calls the endpoint
-      // Then: should proceed with business logic
-    });
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(403);
+    expect(createAdminClient).not.toHaveBeenCalled();
   });
 
-  describe("Not Found", () => {
-    it("should return 404 for non-existent place", () => {
-      // When: place with id doesn't exist in database
-      // Then: should return 404 with "Lugar não encontrado"
-    });
-
-    it("should return 404 for cross-tenant access (indistinguishable from not found)", () => {
-      // When: place exists but belongs to different organization
-      // Then: should return 404 (not 403, following tenant isolation pattern)
-    });
+  it("place inexistente → 404", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({ selectResult: { data: null, error: null } });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(404);
   });
 
-  describe("Conflict States", () => {
-    it("should return 409 when status is 'pending'", () => {
-      // When: place.site_analysis_status is 'pending'
-      // Then: should return 409 with "not_reanalyzable"
-    });
-
-    it("should return 409 when status is 'processing'", () => {
-      // When: place.site_analysis_status is 'processing'
-      // Then: should return 409 with "not_reanalyzable"
-    });
-
-    it("should return 409 when status is 'done'", () => {
-      // When: place.site_analysis_status is 'done'
-      // Then: should return 409 with "not_reanalyzable"
-    });
-
-    it("should return 409 when status is 'not_applicable'", () => {
-      // When: place.site_analysis_status is 'not_applicable' (no website)
-      // Then: should return 409 with "not_reanalyzable"
-    });
+  it("cross-tenant → 404", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({ selectResult: { data: null, error: null } });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(404);
   });
 
-  describe("Success", () => {
-    it("should update status to 'pending' when status is 'failed'", () => {
-      // When: place.site_analysis_status is 'failed' and user is authorized
-      // Then: should update the place's status to 'pending'
-      // And: should return 200 ok with { id, status: "pending" }
+  it("status pending → 409", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({
+      selectResult: {
+        data: placeRow({ site_analysis_status: "pending" }),
+        error: null,
+      },
     });
-
-    it("should emit 'prospected_place.site_quality_requested' event", () => {
-      // When: place.site_analysis_status is 'failed'
-      // Then: should call admin.rpc('emit_event', {...}) with:
-      //   - p_event_type: "prospected_place.site_quality_requested"
-      //   - p_entity_kind: "prospected_place"
-      //   - p_entity_id: placeId
-      //   - p_payload: { prospected_place_id, search_id, place_id, website_url }
-      //   - p_metadata: { request_id, actor_user_id }
-      //   - p_organization_id: orgId
-    });
-
-    it("should audit the reanalyze action", () => {
-      // When: reanalyze succeeds
-      // Then: should call audit() with:
-      //   - action: "prospecting.place_reanalyze"
-      //   - actorUserId, organizationId, resourceId, requestId
-      //   - metadata: { search_id, place_id }
-    });
-
-    it("should not fail response if emit_event fails (graceful degradation)", () => {
-      // When: emit_event RPC returns error
-      // Then: should still return 200 (status update already happened)
-      // And: should log error to console
-    });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(409);
   });
 
-  describe("Payload Structure", () => {
-    it("should include requestId in responses", () => {
-      // All responses should include requestId for tracing
+  it("status processing → 409", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({
+      selectResult: {
+        data: placeRow({ site_analysis_status: "processing" }),
+        error: null,
+      },
     });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(409);
+  });
 
-    it("should translate error messages based on user language", () => {
-      // When: user has idioma preference
-      // Then: error messages should be translated via traduzir()
+  it("status done → 409", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({
+      selectResult: { data: placeRow({ site_analysis_status: "done" }), error: null },
     });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(409);
+  });
+
+  it("status not_applicable → 409", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({
+      selectResult: {
+        data: placeRow({ site_analysis_status: "not_applicable" }),
+        error: null,
+      },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(409);
+  });
+
+  it("status failed → 200, updates status, emits event, audits", async () => {
+    mockAuthzOk();
+    const { client, calls } = makeAdminStub({
+      selectResult: {
+        data: placeRow({ site_analysis_status: "failed" }),
+        error: null,
+      },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.status).toBe("pending");
+    expect(calls.selectFilters).toEqual([
+      ["id", PLACE_ID],
+      ["organization_id", ORG_ID],
+    ]);
+    expect(calls.updateFilters).toEqual([
+      ["id", PLACE_ID],
+      ["organization_id", ORG_ID],
+    ]);
+    expect(calls.rpcCall.name).toBe("emit_event");
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "prospecting.place_reanalyze" })
+    );
+  });
+
+  it("emit_event fails → 200 (graceful)", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({
+      selectResult: {
+        data: placeRow({ site_analysis_status: "failed" }),
+        error: null,
+      },
+      rpcError: { message: "boom" },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(200);
+  });
+
+  it("select error → 500", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({
+      selectResult: { data: null, error: { message: "boom" } },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(500);
+  });
+
+  it("update error → 500", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({
+      selectResult: {
+        data: placeRow({ site_analysis_status: "failed" }),
+        error: null,
+      },
+      updateError: { message: "boom" },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(500);
   });
 });
