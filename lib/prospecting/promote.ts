@@ -232,6 +232,7 @@ export async function promoteToLead(
       promoted_lead_id: leadId,
       promoted_at: new Date().toISOString(),
     })
+    .eq("organization_id", organizationId)
     .eq("id", placeId);
 
   if (updateErr) {

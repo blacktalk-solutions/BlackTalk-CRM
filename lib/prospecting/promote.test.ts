@@ -67,7 +67,7 @@ interface ClientCalls {
   insertedContact?: Record<string, unknown>;
   insertedLead?: Record<string, unknown>;
   insertedLink?: Record<string, unknown>;
-  updatedPlace?: { id: string; leadId: string };
+  updatedPlace?: { org: string; id: string; leadId: string };
 }
 
 function makeClientStub(cfg: ClientCfg) {
@@ -94,10 +94,17 @@ function makeClientStub(cfg: ClientCfg) {
           },
           update() {
             return {
-              eq(col: string, val: string) {
-                if (!calls.updatedPlace) calls.updatedPlace = { id: "", leadId: "" };
+              eq: (col: string, val: string) => {
+                if (!calls.updatedPlace) calls.updatedPlace = { org: "", id: "", leadId: "" };
+                if (col === "organization_id") calls.updatedPlace.org = val;
                 if (col === "id") calls.updatedPlace.id = val;
-                return Promise.resolve(cfg.updatePlace ?? { error: null });
+                return {
+                  eq: (col2: string, val2: string) => {
+                    if (col2 === "organization_id") calls.updatedPlace!.org = val2;
+                    if (col2 === "id") calls.updatedPlace!.id = val2;
+                    return Promise.resolve(cfg.updatePlace ?? { error: null });
+                  },
+                };
               },
             };
           },
@@ -325,8 +332,9 @@ describe("promoteToLead", () => {
       link_kind: "prospected_place",
     });
 
-    // 8) prospected_places atualizado
+    // 8) prospected_places atualizado (com defensive org_id filter)
     expect(calls.updatedPlace).toEqual({
+      org: ORG_ID,
       id: PLACE_ID,
       leadId: expect.any(String),
     });
