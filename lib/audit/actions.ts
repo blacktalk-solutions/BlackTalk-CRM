@@ -461,6 +461,12 @@ export const AUDIT_ACTIONS = [
   "crm_task.updated",
   "crm_task.deleted",
   "organization.switched",
+
+  // Prospecção via Google Maps (T4, migration 0234): a busca disparada é
+  // mutação (custa chamada paga à Places API e grava `prospected_searches` +
+  // N `prospected_places`) — "quem gastou a cota da Google e quando" só tem
+  // resposta nesta trilha.
+  "prospecting.search_run",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

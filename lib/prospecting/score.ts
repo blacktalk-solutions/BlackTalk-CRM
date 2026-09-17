@@ -104,19 +104,30 @@ export function labelFromScore(score: number): StatusLabel {
 function calcularAjuste(input: ScoreInput): number {
   let ajuste = 0;
 
-  const temRating = input.rating !== undefined;
-  const temReviewCount = input.reviewCount !== undefined;
+  // Checagem de undefined INLINE, e não via `temRating`/`temReviewCount`
+  // guardados à parte: o TypeScript só estreita `input.rating`/
+  // `input.reviewCount` de `number | undefined` para `number` a partir da
+  // checagem que os testa DIRETAMENTE — uma booleana solta (por mais que
+  // calculada a partir do mesmo `!== undefined`) não carrega esse estreitamento
+  // para quem lê `input.rating` depois. Mesma lógica de antes, sem o TS2532/
+  // TS18048 (achado ao rodar `pnpm typecheck` pela primeira vez nesta task).
+  const { rating, reviewCount } = input;
 
   // Bonificação por rating alto + reviews suficientes
-  if (temRating && temReviewCount && input.rating >= RATING_LIMITE_BONUS_ALTO && input.reviewCount >= REVIEW_COUNT_PARA_BONUS_ALTO) {
+  if (
+    rating !== undefined &&
+    reviewCount !== undefined &&
+    rating >= RATING_LIMITE_BONUS_ALTO &&
+    reviewCount >= REVIEW_COUNT_PARA_BONUS_ALTO
+  ) {
     ajuste += SCORE_AJUSTE_BONUS_ALTO;
-  } else if (temRating && input.rating >= RATING_LIMITE_BONUS_MEDIO) {
+  } else if (rating !== undefined && rating >= RATING_LIMITE_BONUS_MEDIO) {
     // Bonificação por rating bom, mesmo que reviews < 20
     ajuste += SCORE_AJUSTE_BONUS_MEDIO;
   }
 
   // Penalidade por poucos reviews (descredibilidade)
-  if (temReviewCount && input.reviewCount < REVIEW_COUNT_LIMITE_PENALIDADE) {
+  if (reviewCount !== undefined && reviewCount < REVIEW_COUNT_LIMITE_PENALIDADE) {
     ajuste += SCORE_AJUSTE_PENALIDADE_POUCOS_REVIEWS;
   }
 
