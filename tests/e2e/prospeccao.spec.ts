@@ -130,11 +130,17 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
       // Lugar 1: Com site, score baixo (80) → status "baixa"
       // Lugar 2: Sem site, score alto (95) → status "quente"
       // Lugar 3: Com site, score médio (87) → status "oportunidade"
+      //
+      // site_analysis_status deve usar valores do enum definido em
+      // supabase/migrations/20260916120000_0234_prospeccao_google_maps.sql:115:
+      // 'not_applicable' | 'pending' | 'processing' | 'done' | 'failed'
+      // Usamos 'done' para "análise completada com sucesso".
 
       const places = [
         {
           id: randomUUID(),
           search_id: searchId,
+          organization_id: orgId,
           place_id: "gmap-001",
           name: "Clínica Dr. Silva",
           address: "Rua A, 123 - São Paulo, SP",
@@ -146,7 +152,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
           score_initial: 80,
           score_final: 80,
           status_label: "baixa",
-          site_analysis_status: "success",
+          site_analysis_status: "done",
           site_analysis_result: { performance: "good" },
           email: null,
           promoted_lead_id: null,
@@ -155,6 +161,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
         {
           id: randomUUID(),
           search_id: searchId,
+          organization_id: orgId,
           place_id: "gmap-002",
           name: "Clínica Odontológica Nova",
           address: "Av. B, 456 - São Paulo, SP",
@@ -166,7 +173,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
           score_initial: 95,
           score_final: 95,
           status_label: "quente",
-          site_analysis_status: "success",
+          site_analysis_status: "done",
           site_analysis_result: null,
           email: null,
           promoted_lead_id: null,
@@ -175,6 +182,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
         {
           id: randomUUID(),
           search_id: searchId,
+          organization_id: orgId,
           place_id: "gmap-003",
           name: "Clínica de Saúde Integral",
           address: "Rua C, 789 - São Paulo, SP",
@@ -186,7 +194,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
           score_initial: 87,
           score_final: 87,
           status_label: "oportunidade",
-          site_analysis_status: "success",
+          site_analysis_status: "done",
           site_analysis_result: { performance: "fair" },
           email: null,
           promoted_lead_id: null,
@@ -198,7 +206,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
 
       const { error: placesError } = await admin
         .from("prospected_places")
-        .insert(places.map((p) => ({ ...p, organization_id: orgId })));
+        .insert(places);
       if (placesError) throw new Error(`Falha ao seed places: ${placesError.message}`);
 
       // ═══ Login como manager ═══
@@ -241,8 +249,13 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
       await expect(scoreTexts).toBeDefined();
 
       // ═══ Step 3: Aguarda análise (Realtime — nesta spec os dados já têm análise completa) ═══
-      // Em produção, o site_analysis_status muda de pending → processing → success
-      // Aqui é success desde o seed, mas confirmamos que "Analisando..." não aparece
+      // Em produção, o site_analysis_status muda de pending → processing → done (via worker de T5).
+      // Aqui é 'done' desde o seed (não há worker rodando), mas confirmamos que "Analisando..." não aparece.
+      //
+      // Realtime estaria ativo e ouvindo mudanças em prospected_places, mas nesta spec os dados
+      // já estão em estado final ('done'), então não há UPDATE esperado do servidor. Isso é seguro
+      // porque a spec testa o "caminho verde" onde análise já completou; T5 (worker + Realtime)
+      // tem sua própria spec que testa a transição pending→done.
       await expect(page.getByText("Analisando...")).not.toBeVisible();
 
       // ═══ Step 4: Promove a segunda linha (sem site, score "quente") ═══
