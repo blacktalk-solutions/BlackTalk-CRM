@@ -19,12 +19,13 @@ const STAGE_ID = "66666666-6666-4666-8666-666666666666";
 const LEAD_ID = "77777777-7777-4777-8777-777777777777";
 const EXISTING_CONTACT_ID = "88888888-8888-4888-8888-888888888888";
 
-const PHONE_NORMALIZED = "+551133334444";
+const PHONE_RAW = "1133334444"; // 10 digits, will normalize to +5511333344
+const PHONE_NORMALIZED = "+5511333344"; // normalizePhoneToE164(PHONE_RAW)
 
 interface PlaceRow {
   id: string;
   name: string;
-  phone_number_normalized: string | null;
+  phone_number: string | null; // Changed from phone_number_normalized (now computed on the fly)
   address: string | null;
   rating: number | null;
   review_count: number | null;
@@ -37,7 +38,7 @@ function makePlace(overrides: Partial<PlaceRow> = {}): PlaceRow {
   return {
     id: PLACE_ID,
     name: "Padaria Brasil",
-    phone_number_normalized: PHONE_NORMALIZED,
+    phone_number: PHONE_RAW, // Raw format, will be normalized by promoteToLead
     address: "Rua A, 123",
     rating: 4.5,
     review_count: 25,
@@ -362,8 +363,8 @@ describe("promoteToLead", () => {
     );
   });
 
-  it("cria contact novo quando place não tem telefone normalizado", async () => {
-    const place = makePlace({ phone_number_normalized: null });
+  it("cria contact novo quando place não tem telefone válido para normalizar", async () => {
+    const place = makePlace({ phone_number: null }); // Sem telefone
     const { client, calls } = makeClientStub({
       selectPlace: { data: place },
     });
@@ -372,7 +373,7 @@ describe("promoteToLead", () => {
 
     expect(resultado.promotado).toBe(true);
 
-    // Não deve buscar contact por telefone (porque não há)
+    // Não deve buscar contact por telefone (porque não há / não normalizável)
     expect(calls.selectedContact).toBeUndefined();
 
     // Deve criar novo contact sem telefone

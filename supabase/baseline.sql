@@ -18948,6 +18948,10 @@ do $$ begin
   select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='user_organizations') then
   alter publication supabase_realtime add table public.user_organizations;
  end if;
+ if exists(select 1 from pg_publication where pubname='supabase_realtime') and not exists(
+  select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='prospected_places') then
+  alter publication supabase_realtime add table public.prospected_places;
+ end if;
 end $$;
 
 -- INSERT/reativação aplica escolha assinada; replay ativo retorna antes da escrita.

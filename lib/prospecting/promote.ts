@@ -15,6 +15,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logger } from "@/lib/logger";
+import { normalizePhoneToE164 } from "@/lib/prospecting/contact-utils";
 
 /**
  * Por que um resultado NÃO foi promovido a lead.
@@ -51,7 +52,7 @@ export async function promoteToLead(
   const { data: place, error: placeErr } = await db
     .from("prospected_places")
     .select(
-      "id, name, phone_number_normalized, address, rating, review_count, " +
+      "id, name, phone_number, address, rating, review_count, " +
         "place_id, website_url, promoted_lead_id",
     )
     .eq("organization_id", organizationId)
@@ -74,13 +75,16 @@ export async function promoteToLead(
   // 3. Encontra ou cria contact
   let contactId: string;
 
-  // Se temos telefone normalizado, procura por ele
-  if (place.phone_number_normalized) {
+  // Computa o telefone normalizado a partir do raw phone_number
+  const normalizedPhone = normalizePhoneToE164(place.phone_number);
+
+  // Se temos telefone normalizado, procura por duplicata antes de criar
+  if (normalizedPhone) {
     const { data: existingContact } = await db
       .from("contacts")
       .select("id")
       .eq("organization_id", organizationId)
-      .eq("phone_number", place.phone_number_normalized)
+      .eq("phone_number", normalizedPhone)
       .maybeSingle();
 
     if (existingContact) {
@@ -93,7 +97,7 @@ export async function promoteToLead(
           organization_id: organizationId,
           name: place.name,
           display_name: place.name,
-          phone_number: place.phone_number_normalized,
+          phone_number: normalizedPhone,
           source: "google_maps_prospecting",
           source_metadata: {
             place_id: place.place_id,
@@ -115,7 +119,7 @@ export async function promoteToLead(
       contactId = (newContact as { id: string }).id;
     }
   } else {
-    // Sem telefone: cria contact sem buscar duplicatas
+    // Sem telefone válido: cria contact sem buscar duplicatas
     const { data: newContact, error: contactErr } = await db
       .from("contacts")
       .insert({

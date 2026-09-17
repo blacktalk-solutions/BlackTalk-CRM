@@ -72,23 +72,8 @@ export async function POST(
     );
   }
 
-  // Update status back to pending
-  const { error: updateErr } = await admin
-    .from("prospected_places")
-    .update({ site_analysis_status: "pending" })
-    .eq("id", placeId)
-    .eq("organization_id", org.orgId);
-
-  if (updateErr) {
-    return fail(
-      "internal_error",
-      updateErr.message ?? t("Erro ao atualizar o lugar."),
-      500,
-      { requestId }
-    );
-  }
-
-  // Emit the same event as T4 does for new places
+  // Emit the event BEFORE updating status, so if emit fails we don't strand
+  // the row at 'pending' with no event queued (see finding #5).
   const emitResult = await admin.rpc("emit_event", {
     p_event_type: "prospected_place.site_quality_requested",
     p_entity_kind: "prospected_place",
@@ -108,8 +93,30 @@ export async function POST(
       prospectedPlaceId: placeId,
       error: emitResult.error.message,
     });
-    // Don't fail the response if emit fails — the update already happened.
-    // The worker might miss this event, but manual retry is always possible.
+    // Emit failed: don't update status to 'pending', leave it at 'failed'
+    // so the operator can retry via the "Tentar de novo" button.
+    return fail(
+      "emit_event_failed",
+      t("Falha ao emitir evento de análise. Tente novamente."),
+      500,
+      { requestId }
+    );
+  }
+
+  // Event emitted successfully: now update status to pending
+  const { error: updateErr } = await admin
+    .from("prospected_places")
+    .update({ site_analysis_status: "pending" })
+    .eq("id", placeId)
+    .eq("organization_id", org.orgId);
+
+  if (updateErr) {
+    return fail(
+      "internal_error",
+      updateErr.message ?? t("Erro ao atualizar o lugar."),
+      500,
+      { requestId }
+    );
   }
 
   void audit({

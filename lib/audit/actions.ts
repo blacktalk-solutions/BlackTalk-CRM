@@ -471,6 +471,11 @@ export const AUDIT_ACTIONS = [
   // Prospecção: retry manual de análise (T11). Uma linha já analisada que
   // falhou é retentada — "quem acionou a rearrumação e quando" é rastreável.
   "prospecting.place_reanalyze",
+
+  // Prospecção: promoção para o funil (T12). Um resultado de prospeccão
+  // torna-se lead — "quem alimentou o funil com este contato e quando" é
+  // rastreável. Auditável porque gera contact/lead e consumo de quota.
+  "prospecting.place_promoted",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

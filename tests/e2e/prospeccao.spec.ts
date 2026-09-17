@@ -332,12 +332,12 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
       // Valida no banco que o lead foi criado com os dados corretos
       const { data: leadData } = await admin
         .from("crm_leads")
-        .select("id, contact_name, organization_id")
+        .select("id, contact_id, organization_id, contacts(name)")
         .eq("id", leadId)
         .maybeSingle();
 
       expect(leadData).toBeDefined();
-      expect(leadData?.contact_name).toBe("Clínica Odontológica Nova");
+      expect((leadData as any)?.contacts?.name).toBe("Clínica Odontológica Nova");
       expect(leadData?.organization_id).toBe(orgId);
 
     } finally {
@@ -375,7 +375,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
 
             if (leadCheck?.contact_id) {
               await admin
-                .from("crm_contacts")
+                .from("contacts")
                 .delete()
                 .eq("id", leadCheck.contact_id);
             }
