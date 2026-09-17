@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { env } from "@/lib/env";
 import { searchPlaces, PlacesApiError } from "./places-client";
+
+// `lib/env.ts` roda a validação Zod inteira do app (Supabase, WAHA, etc.) no
+// import — mockar aqui é o mesmo padrão de lib/supabase/cookie-secure.test.ts:
+// devolve um objeto simples e mutável, então cada teste só atribui a chave que
+// importa, sem arrastar as ~30 outras variáveis obrigatórias do schema real.
+vi.mock("@/lib/env", () => ({
+  env: { GOOGLE_PLACES_API_KEY: "test-api-key" },
+}));
 
 /** Monta um `Response` fake mínimo — só o que o client lê (`ok`, `status`, `json()`). */
 function fakeResponse(status: number, body: unknown): Response {
@@ -45,14 +54,11 @@ function parseBody(init: RequestInit): { pageToken?: string } {
   return JSON.parse(init.body as string) as { pageToken?: string };
 }
 
-const ORIGINAL_KEY = process.env.GOOGLE_PLACES_API_KEY;
-
 beforeEach(() => {
-  process.env.GOOGLE_PLACES_API_KEY = "test-api-key";
+  env.GOOGLE_PLACES_API_KEY = "test-api-key";
 });
 
 afterEach(() => {
-  process.env.GOOGLE_PLACES_API_KEY = ORIGINAL_KEY;
   vi.restoreAllMocks();
 });
 
@@ -133,7 +139,9 @@ describe("searchPlaces — para antes do teto (2 páginas)", () => {
 
 describe("searchPlaces — taxonomia de erro", () => {
   it("should throw PlacesApiError with code 'missing_api_key' WITHOUT calling fetch when the env var is absent", async () => {
-    delete process.env.GOOGLE_PLACES_API_KEY;
+    // "" é exatamente o que `lib/env.ts` devolve pra GOOGLE_PLACES_API_KEY
+    // ausente (z.string().optional().default("")) — nunca undefined.
+    env.GOOGLE_PLACES_API_KEY = "";
     const fetchImpl = vi.fn();
 
     await expect(
@@ -174,6 +182,22 @@ describe("searchPlaces — taxonomia de erro", () => {
     await expect(
       searchPlaces({ businessType: "escritório", location: "Fortaleza" }, { fetchImpl, delayImpl: instantDelay }),
     ).rejects.toMatchObject({ code: "unknown_error" });
+  });
+
+  it("should wrap a transport-level fetch rejection (DNS/timeout/connection refused) as PlacesApiError with code 'unknown_error'", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network timeout");
+    });
+
+    const promise = searchPlaces(
+      { businessType: "veterinária", location: "Goiânia" },
+      { fetchImpl, delayImpl: instantDelay },
+    );
+
+    await expect(promise).rejects.toBeInstanceOf(PlacesApiError);
+    await expect(promise).rejects.toMatchObject({ code: "unknown_error" });
+    // A mensagem original não pode se perder — é o que torna o erro depurável.
+    await expect(promise).rejects.toMatchObject({ message: expect.stringContaining("network timeout") });
   });
 });
 
@@ -251,8 +275,8 @@ describe("searchPlaces — field mask", () => {
     expect(fieldMask!.split(",")).toEqual(expectedFields);
   });
 
-  it("should read the API key from process.env.GOOGLE_PLACES_API_KEY into X-Goog-Api-Key", async () => {
-    process.env.GOOGLE_PLACES_API_KEY = "minha-chave-secreta";
+  it("should read the API key from env.GOOGLE_PLACES_API_KEY (lib/env.ts) into X-Goog-Api-Key", async () => {
+    env.GOOGLE_PLACES_API_KEY = "minha-chave-secreta";
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => fakeResponse(200, { places: [] }));
 
     await searchPlaces(

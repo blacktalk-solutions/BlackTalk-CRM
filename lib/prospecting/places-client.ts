@@ -1,15 +1,18 @@
 /**
  * Client da Google Places API (New) — busca de estabelecimentos por texto.
  *
- * Server-only por construção: lê `GOOGLE_PLACES_API_KEY` de `process.env` e
- * nunca deveria ser importado por um Client Component. Não há `"use client"`
- * neste arquivo nem chamada de browser API — só `fetch`/`setTimeout`, que
- * existem tanto em Node quanto em browser, então a fronteira aqui é de
- * IMPORT (nenhuma rota/componente client deve importar este módulo), não de
- * runtime. Se algum dia isso vazar para o bundle do cliente, a chave da
- * Google apareceria só se alguém também expusesse `GOOGLE_PLACES_API_KEY`
- * como `NEXT_PUBLIC_*` — o que este módulo não faz.
+ * Server-only por construção: lê `GOOGLE_PLACES_API_KEY` de `lib/env.ts`
+ * (validada via Zod, junto de toda outra chave externa — WAHA, Resend,
+ * Google Agenda etc.) e nunca deveria ser importado por um Client Component.
+ * Não há `"use client"` neste arquivo nem chamada de browser API — só
+ * `fetch`/`setTimeout`, que existem tanto em Node quanto em browser, então a
+ * fronteira aqui é de IMPORT (nenhuma rota/componente client deve importar
+ * este módulo), não de runtime. Se algum dia isso vazar para o bundle do
+ * cliente, a chave da Google apareceria só se alguém também expusesse
+ * `GOOGLE_PLACES_API_KEY` como `NEXT_PUBLIC_*` — o que `lib/env.ts` não faz.
  */
+
+import { env } from "@/lib/env";
 
 /** Um resultado bruto de place, já mapeado dos nomes da API pros nossos. */
 export interface RawPlace {
@@ -173,13 +176,14 @@ async function buildApiError(response: Response): Promise<PlacesApiError> {
  * @param query `businessType` + `location` — vira `"<businessType> em <location>"`.
  * @param deps `fetchImpl`/`delayImpl` injetáveis; produção usa os defaults reais.
  * @throws {PlacesApiError} `missing_api_key` (sem nem chamar fetch),
- *   `invalid_api_key_or_billing`, `quota_exceeded`, ou `unknown_error`.
+ *   `invalid_api_key_or_billing`, `quota_exceeded`, ou `unknown_error`
+ *   (também usado pra falha de transporte — DNS, timeout, conexão recusada).
  */
 export async function searchPlaces(
   query: SearchPlacesQuery,
   deps: SearchPlacesDeps = {},
 ): Promise<SearchPlacesResult> {
-  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  const apiKey = env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     throw new PlacesApiError(
       "missing_api_key",
@@ -195,19 +199,29 @@ export async function searchPlaces(
   let pageToken: string | undefined;
 
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const response = await fetchImpl(PLACES_SEARCH_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": FIELD_MASK,
-      },
-      body: JSON.stringify({
-        textQuery: `${query.businessType} em ${query.location}`,
-        pageSize: PAGE_SIZE,
-        ...(pageToken ? { pageToken } : {}),
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(PLACES_SEARCH_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": FIELD_MASK,
+        },
+        body: JSON.stringify({
+          textQuery: `${query.businessType} em ${query.location}`,
+          pageSize: PAGE_SIZE,
+          ...(pageToken ? { pageToken } : {}),
+        }),
+      });
+    } catch (transportError) {
+      // Falha de TRANSPORTE (DNS, timeout, conexão recusada) — nunca chegou a
+      // haver resposta HTTP, então não há status pra classificar. Ainda assim
+      // vira PlacesApiError (doutrina do módulo: nunca exception genérica),
+      // reaproveitando "unknown_error" — não é billing/quota/chave, é a rede.
+      const detalhe = transportError instanceof Error ? transportError.message : String(transportError);
+      throw new PlacesApiError("unknown_error", `Google Places API: falha de transporte (${detalhe})`);
+    }
 
     if (!response.ok) {
       throw await buildApiError(response);

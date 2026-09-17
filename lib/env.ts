@@ -293,6 +293,15 @@ const schema = z.object({
   GOOGLE_CALENDAR_CLIENT_ID: z.string().optional().default(""),
   GOOGLE_CALENDAR_CLIENT_SECRET: z.string().optional().default(""),
 
+  // Places API (New) — usada por `lib/prospecting/places-client.ts` (busca de
+  // estabelecimentos pra prospecção de leads via Google Maps). Opcional: é
+  // feature nova, ainda não exigida pro app subir. Sem a chave, o client lança
+  // `PlacesApiError({ code: "missing_api_key" })` só quando a busca é
+  // efetivamente chamada — nunca no boot. Gerar em console.cloud.google.com >
+  // APIs e Serviços > Credenciais, com a "Places API (New)" habilitada no
+  // projeto e billing ativo (a API cobra por SKU, conforme os campos pedidos).
+  GOOGLE_PLACES_API_KEY: z.string().optional().default(""),
+
   // Nuvemshop — opcional (template genérico open-source). Só exigidas quando
   // NUVEMSHOP_ENABLED=true; o runtime já degrada via getConfig()==null.
   NUVEMSHOP_APP_ID: z.string().optional().default(""),
