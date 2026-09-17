@@ -8183,6 +8183,42 @@ export const DICIONARIO: Traducoes = {
   "Peça uma sugestão de resposta escrita pela IA, revise ou edite o texto, e só então aprove o envio ao cliente.": {
     es: "Pide una sugerencia de respuesta escrita por la IA, revisa o edita el texto, y solo entonces aprueba el envío al cliente.",
   },
+
+  // ─── app/app/prospeccao (busca de leads via Google Maps — T6) ───
+  "Prospecção": { es: "Prospección" },
+  "Busque negócios no Google Maps por tipo e localidade. Cada resultado já sai com um score de oportunidade para venda de site.": {
+    es: "Busca negocios en Google Maps por tipo y localidad. Cada resultado ya sale con un score de oportunidad para venta de sitio web.",
+  },
+  "Buscas anteriores": { es: "Búsquedas anteriores" },
+  "resultado": { es: "resultado" },
+  "resultados": { es: "resultados" },
+  "Nova busca": { es: "Nueva búsqueda" },
+  "Tipo de negócio": { es: "Tipo de negocio" },
+  "Ex.: clínica odontológica, pizzaria, barbearia…": {
+    es: "Ej.: clínica odontológica, pizzería, barbería…",
+  },
+  "Localidade": { es: "Localidad" },
+  "Ex.: Curitiba, PR": { es: "Ej.: Curitiba, PR" },
+  "Tipo de serviço": { es: "Tipo de servicio" },
+  "Venda de site": { es: "Venta de sitio web" },
+  "Não foi possível concluir a busca.": { es: "No se pudo completar la búsqueda." },
+  "Buscando…": { es: "Buscando…" },
+  // "Buscar", "Telefone", "Status", "Ações" e "Página" já têm entrada (linhas
+  // ~379, ~470, ~627, ~1052, ~3115) — reusadas, não duplicadas aqui.
+  "Esta busca já traz o máximo de 60 resultados que a Google Places API permite por consulta. Para encontrar mais negócios, refine a busca — por bairro ou por um tipo mais específico de negócio — e busque de novo.": {
+    es: "Esta búsqueda ya trae el máximo de 60 resultados que la Google Places API permite por consulta. Para encontrar más negocios, refina la búsqueda — por barrio o por un tipo de negocio más específico — y busca de nuevo.",
+  },
+  "Empresa": { es: "Empresa" },
+  "Site": { es: "Sitio web" },
+  "Rating": { es: "Rating" },
+  "Score": { es: "Score" },
+  "Nenhum resultado para esta busca.": { es: "Ningún resultado para esta búsqueda." },
+  "Tente um tipo de negócio ou uma localidade diferente.": {
+    es: "Intenta un tipo de negocio o una localidad diferente.",
+  },
+  "Sem site": { es: "Sin sitio web" },
+  "Quente": { es: "Caliente" },
+  "Oportunidade": { es: "Oportunidad" },
 };
 
 /**
