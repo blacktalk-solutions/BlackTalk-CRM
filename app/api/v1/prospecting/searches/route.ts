@@ -31,6 +31,7 @@ import {
 import { scoreInitial } from "@/lib/prospecting/score";
 import { prospectingSearchSchema, validateRequest } from "@/lib/schemas";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -62,8 +63,14 @@ const PLACES_ERROR_STATUS: Record<PlacesApiErrorCode, number> = {
   unknown_error: 502,
 };
 
-/** Forma de uma linha de `prospected_places` como o `.select()` devolve. */
-interface ProspectedPlaceRow {
+/**
+ * Forma de uma linha de `prospected_places` como o `.select()` devolve.
+ * `export` porque `[id]/route.ts` (T5, GET de reabertura) reusa o mesmo
+ * shape e o mesmo `toPlaceDTO` — as duas rotas devolvem o mesmo contrato de
+ * `ProspectedPlace` de design.md, e duplicar o mapeamento é como as duas
+ * respostas divergem sem ninguém perceber.
+ */
+export interface ProspectedPlaceRow {
   id: string;
   search_id: string;
   place_id: string;
@@ -88,7 +95,7 @@ interface ProspectedPlaceRow {
  * DTO de resposta — mesmo shape camelCase de `ProspectedPlace` em design.md
  * (§"Data Models"), o contrato que a UI (tasks futuras) já assume.
  */
-interface ProspectedPlaceDTO {
+export interface ProspectedPlaceDTO {
   id: string;
   searchId: string;
   placeId: string;
@@ -109,7 +116,7 @@ interface ProspectedPlaceDTO {
   promotedAt: string | null;
 }
 
-function toPlaceDTO(row: ProspectedPlaceRow): ProspectedPlaceDTO {
+export function toPlaceDTO(row: ProspectedPlaceRow): ProspectedPlaceDTO {
   return {
     id: row.id,
     searchId: row.search_id,
@@ -132,10 +139,52 @@ function toPlaceDTO(row: ProspectedPlaceRow): ProspectedPlaceDTO {
   };
 }
 
-const PLACES_SELECT_COLUNAS =
+export const PLACES_SELECT_COLUNAS =
   "id, search_id, place_id, name, address, phone_number, phone_number_normalized, " +
   "website_url, rating, review_count, score_initial, score_final, status_label, " +
   "site_analysis_status, site_analysis_result, email, promoted_lead_id, promoted_at";
+
+/**
+ * Forma de uma linha de `prospected_searches` como a listagem (GET deste
+ * arquivo) e a reabertura (`[id]/route.ts`, GET) devolvem — resumo de
+ * histórico, bem mais enxuto que o insert do POST acima: sem
+ * `organization_id` nem `requested_by`, que nenhuma das duas rotas expõe.
+ */
+export interface ProspectedSearchRow {
+  id: string;
+  business_type: string;
+  location: string;
+  service_type: string;
+  result_count: number;
+  places_api_capped: boolean;
+  created_at: string;
+}
+
+/** DTO de resposta — mesmo shape camelCase de `ProspectedPlaceDTO` acima. */
+export interface ProspectedSearchDTO {
+  id: string;
+  businessType: string;
+  location: string;
+  serviceType: string;
+  resultCount: number;
+  placesApiCapped: boolean;
+  createdAt: string;
+}
+
+export function toSearchDTO(row: ProspectedSearchRow): ProspectedSearchDTO {
+  return {
+    id: row.id,
+    businessType: row.business_type,
+    location: row.location,
+    serviceType: row.service_type,
+    resultCount: row.result_count,
+    placesApiCapped: row.places_api_capped,
+    createdAt: row.created_at,
+  };
+}
+
+export const SEARCH_SELECT_COLUNAS =
+  "id, business_type, location, service_type, result_count, places_api_capped, created_at";
 
 export async function POST(req: NextRequest): Promise<Response> {
   const supportDenied = await requireSupportWrite();
@@ -311,4 +360,51 @@ export async function POST(req: NextRequest): Promise<Response> {
     { searchId, places: placeRows.map(toPlaceDTO) },
     { status: 201, requestId },
   );
+}
+
+/**
+ * GET /api/v1/prospecting/searches — T5 do plano
+ * `.specs/features/prospeccao-google-maps/` (design.md "API": "histórico
+ * (lista)").
+ *
+ * Menu de histórico: só o resumo de cada busca, sem os `prospected_places`
+ * associados (isso é o GET de `[id]/route.ts`, que reabre uma busca com os
+ * resultados completos). Mesmo gate do POST acima
+ * (`requireRole('manager')`) — ver o histórico de buscas que custaram
+ * chamada paga à Places API é a mesma classe de ação que disparar uma nova.
+ *
+ * RLS (`tenant_isolation_prospected_searches_all`) já restringe às
+ * organizações de que o usuário é MEMBRO — o `.eq("organization_id", ...)`
+ * abaixo restringe mais um passo, só à organização ATIVA da sessão (não
+ * "todas as organizações de que sou membro"), mesmo padrão do GET de
+ * `app/api/v1/ai/knowledge/sources/[id]/route.ts`.
+ */
+export async function GET(req: NextRequest): Promise<Response> {
+  const requestId = randomUUID();
+
+  const authz = await requireRole("manager", { requestId, resource: "prospected_searches" });
+  if (!authz.ok) return authz.response;
+  const { org } = authz;
+
+  const url = new URL(req.url);
+  const limitRaw = Number(url.searchParams.get("limit") ?? 50);
+  // Mesmo clamping de app/api/v1/leads/[id]/timeline/route.ts. Sem cursor:
+  // o brief desta task marca paginação como opcional e só se trivial — não
+  // há um padrão de cursor pronto pra copiar pra esta listagem simples.
+  const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("prospected_searches")
+    .select(SEARCH_SELECT_COLUNAS)
+    .eq("organization_id", org.orgId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    return fail("internal_error", error.message, 500, { requestId });
+  }
+
+  const rows = (data ?? []) as unknown as ProspectedSearchRow[];
+  return ok(rows.map(toSearchDTO), { requestId });
 }

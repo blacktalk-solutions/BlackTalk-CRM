@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { requireRole } from "@/lib/auth/require-role";
 import { audit } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { fail } from "@/lib/api/wrappers";
 import { searchPlaces, PlacesApiError, type RawPlace } from "@/lib/prospecting/places-client";
 import { scoreInitial } from "@/lib/prospecting/score";
@@ -17,10 +18,17 @@ import type { AuthUser } from "@/lib/auth/types";
  * parcial, zero resultados não é erro, body inválido → 422, falha no insert
  * de `prospected_places` desfaz `prospected_searches` (compensação, já que o
  * client Supabase deste repo não tem transação multi-tabela real).
+ *
+ * T5 — GET /api/v1/prospecting/searches (mesmo arquivo, histórico/lista).
+ *
+ * Cobre: lista retorna só buscas da organização ATIVA (filtro explícito além
+ * da RLS), mapeamento pra DTO camelCase, `requireRole` bloqueando role
+ * insuficiente, erro do Supabase → 500.
  */
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 vi.mock("@/lib/audit", () => ({ audit: vi.fn(async () => undefined) }));
 vi.mock("@/lib/prospecting/places-client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/prospecting/places-client")>()),
@@ -143,6 +151,65 @@ function postReq(body: unknown) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+function getReq(qs = "") {
+  return new NextRequest(`http://localhost/api/v1/prospecting/searches${qs}`, { method: "GET" });
+}
+
+/** Uma linha de `prospected_searches` no formato que o `.select()` da T5 devolve. */
+function searchRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: SEARCH_ID,
+    business_type: "padaria",
+    location: "São Paulo, SP",
+    service_type: "venda_de_site",
+    result_count: 2,
+    places_api_capped: false,
+    created_at: "2026-09-01T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+interface ListClientCfg {
+  result?: { data?: unknown[] | null; error?: unknown };
+}
+
+interface ListCalls {
+  filters: Array<[string, unknown]>;
+  order?: [string, { ascending: boolean }];
+  limit?: number;
+}
+
+/** Stub de `createClient()` só pra cadeia usada pelo GET (lista) desta rota. */
+function makeListClientStub(cfg: ListClientCfg = {}) {
+  const calls: ListCalls = { filters: [] };
+  const client = {
+    from(table: string) {
+      if (table !== "prospected_searches") throw new Error(`unexpected table ${table}`);
+      return {
+        select(_cols: string) {
+          return {
+            eq(col: string, val: unknown) {
+              calls.filters.push([col, val]);
+              return {
+                order(col2: string, opts: { ascending: boolean }) {
+                  calls.order = [col2, opts];
+                  return {
+                    limit(n: number) {
+                      calls.limit = n;
+                      return Promise.resolve(cfg.result ?? { data: [], error: null });
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  return { client, calls };
 }
 
 const VALID_BODY = {
@@ -356,6 +423,94 @@ describe("POST /api/v1/prospecting/searches", () => {
     expect(res.status).toBe(500);
     expect(calls.insertedPlaces).toBeUndefined();
     expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/v1/prospecting/searches", () => {
+  it("sem role manager+ → repassa authz.response, nunca chama o banco", async () => {
+    vi.mocked(requireRole).mockResolvedValue({
+      ok: false,
+      response: fail("forbidden_role", "Permissão insuficiente.", 403, {}),
+    } as never);
+
+    const { GET } = await import("./route");
+    const res = await GET(getReq());
+
+    expect(res.status).toBe(403);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("lista as buscas da organização ativa, mais recentes primeiro, mapeadas pra DTO camelCase", async () => {
+    mockAuthzOk();
+    const rows = [
+      searchRow({ id: SEARCH_ID, business_type: "padaria", result_count: 2 }),
+      searchRow({ id: "44444444-4444-4444-8444-444444444444", business_type: "barbearia", result_count: 0, places_api_capped: true }),
+    ];
+    const { client, calls } = makeListClientStub({ result: { data: rows } });
+    vi.mocked(createClient).mockResolvedValue(client as never);
+
+    const { GET } = await import("./route");
+    const res = await GET(getReq());
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(body.data).toEqual([
+      {
+        id: SEARCH_ID,
+        businessType: "padaria",
+        location: "São Paulo, SP",
+        serviceType: "venda_de_site",
+        resultCount: 2,
+        placesApiCapped: false,
+        createdAt: "2026-09-01T12:00:00.000Z",
+      },
+      {
+        id: "44444444-4444-4444-8444-444444444444",
+        businessType: "barbearia",
+        location: "São Paulo, SP",
+        serviceType: "venda_de_site",
+        resultCount: 0,
+        placesApiCapped: true,
+        createdAt: "2026-09-01T12:00:00.000Z",
+      },
+    ]);
+    // Filtro pela org ATIVA (não só a RLS) + ordem de recência.
+    expect(calls.filters).toContainEqual(["organization_id", ORG_ID]);
+    expect(calls.order).toEqual(["created_at", { ascending: false }]);
+  });
+
+  it("?limit= é respeitado (clamp 1-100, default 50)", async () => {
+    mockAuthzOk();
+    const { client: c1, calls: calls1 } = makeListClientStub({ result: { data: [] } });
+    vi.mocked(createClient).mockResolvedValue(c1 as never);
+    const { GET } = await import("./route");
+    await GET(getReq("?limit=10"));
+    expect(calls1.limit).toBe(10);
+
+    vi.mocked(createClient).mockClear();
+    const { client: c2, calls: calls2 } = makeListClientStub({ result: { data: [] } });
+    vi.mocked(createClient).mockResolvedValue(c2 as never);
+    await GET(getReq());
+    expect(calls2.limit).toBe(50);
+
+    vi.mocked(createClient).mockClear();
+    const { client: c3, calls: calls3 } = makeListClientStub({ result: { data: [] } });
+    vi.mocked(createClient).mockResolvedValue(c3 as never);
+    await GET(getReq("?limit=9999"));
+    expect(calls3.limit).toBe(100);
+  });
+
+  it("erro do Supabase → 500 internal_error", async () => {
+    mockAuthzOk();
+    const { client } = makeListClientStub({ result: { error: { message: "boom" } } });
+    vi.mocked(createClient).mockResolvedValue(client as never);
+
+    const { GET } = await import("./route");
+    const res = await GET(getReq());
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("internal_error");
   });
 });
 
