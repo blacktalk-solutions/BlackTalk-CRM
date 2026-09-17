@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useT } from "@/hooks/i18n/useT";
+import { useRealtimeChannel } from "@/hooks/realtime/useRealtimeChannel";
 import type { ProspectedPlaceDTO } from "@/app/api/v1/prospecting/searches/route";
 import type { StatusLabel } from "@/lib/prospecting/score";
 import { paginateResults, totalResultPages } from "@/lib/prospecting/pagination";
@@ -36,6 +37,49 @@ const STATUS_META: Record<StatusLabel, { label: string; variant: "success" | "wa
   baixa: { label: "Baixa", variant: "neutral" },
 };
 
+/**
+ * Aplica um update de linha chegado do Realtime ao estado local da tabela.
+ *
+ * Função pura: recebe o estado atual, o update do servidor (com os campos que
+ * mudaram), e devolve o novo estado. Substitui só a linha certa por `id`,
+ * preserva ordem e demais linhas, e ignora silenciosamente updates de linhas
+ * que não estão mais na lista (pode acontecer se o usuário mudou de página ou
+ * se a linha foi deletada enquanto a atualização estava em voo).
+ */
+export function applyPlaceUpdate(
+  currentPlaces: ProspectedPlaceDTO[],
+  updatedData: Record<string, unknown>,
+): ProspectedPlaceDTO[] {
+  const placeId = updatedData.id as string | undefined;
+  if (!placeId) return currentPlaces;
+
+  const index = currentPlaces.findIndex((p) => p.id === placeId);
+  if (index === -1) return currentPlaces; // linha não está na lista, ignora
+
+  // Mapeia os campos snake_case do banco para camelCase do DTO
+  const fieldMap: Record<string, keyof ProspectedPlaceDTO> = {
+    score_final: "scoreFinal",
+    status_label: "statusLabel",
+    site_analysis_status: "siteAnalysisStatus",
+    site_analysis_result: "siteAnalysisResult",
+    email: "email",
+  };
+
+  const newPlaces = [...currentPlaces];
+  const updated: Partial<ProspectedPlaceDTO> = {};
+
+  for (const [dbKey, dtoKey] of Object.entries(fieldMap)) {
+    if (dbKey in updatedData) {
+      updated[dtoKey] = updatedData[dbKey] as never;
+    }
+  }
+
+  // Cria uma cópia mesclada da linha (preserve existing fields)
+  // A spread preserva os campos não atualizados, então o resultado é sempre um DTO válido
+  newPlaces[index] = { ...currentPlaces[index], ...updated } as ProspectedPlaceDTO;
+  return newPlaces;
+}
+
 interface Props {
   /**
    * Não lido AINDA nesta task — faz parte do contrato porque T9 (Realtime,
@@ -56,18 +100,42 @@ interface Props {
  * PROSPECT-04) e nunca refaz requisição entre páginas. A lógica de paginação
  * mora em `lib/prospecting/pagination.ts`, pura e testada isolada.
  *
- * Realtime (assinatura em `prospected_places` pra refletir o score final
- * assim que o worker de análise de site termina) é T9, task futura que
- * ESTENDE este componente — fora de escopo aqui (ver design.md, "T9: Realtime
- * na tabela de resultados"). Ações de WhatsApp/exportar/promover/analisar
- * site também são tasks futuras — a coluna "Ações" é só um placeholder.
+ * Realtime (T9): assina `prospected_places` filtrado por `search_id` e
+ * atualiza cada linha localmente quando o worker de análise de site termina,
+ * sem reload. Indicador "Analisando..." mostra para linhas em estado
+ * pending/processing.
  */
-export function ProspectingResultsTable({ initialPlaces, placesApiCapped }: Props) {
+export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapped }: Props) {
   const t = useT();
   const [page, setPage] = useState(1);
+  const [places, setPlaces] = useState<ProspectedPlaceDTO[]>(initialPlaces);
 
-  const total = totalResultPages(initialPlaces.length);
-  const linhasDaPagina = paginateResults(initialPlaces, page);
+  // Realtime: escuta updates na tabela prospected_places
+  const handleRealtimeChange = useCallback(
+    (payload: unknown) => {
+      // O Realtime entrega um objeto com `new` (valores atualizados)
+      const data = (payload as Record<string, unknown> | undefined)?.new;
+      if (data && typeof data === "object") {
+        setPlaces((current) => applyPlaceUpdate(current, data as Record<string, unknown>));
+      }
+    },
+    [],
+  );
+
+  useRealtimeChannel({
+    name: `prospecting-results-${searchId}`,
+    postgresChanges: {
+      event: "UPDATE",
+      schema: "public",
+      table: "prospected_places",
+      filter: `search_id=eq.${searchId}`,
+    },
+    onChange: handleRealtimeChange,
+    enabled: !!searchId,
+  });
+
+  const total = totalResultPages(places.length);
+  const linhasDaPagina = paginateResults(places, page);
 
   return (
     <div className="flex flex-col gap-4">
@@ -100,7 +168,7 @@ export function ProspectingResultsTable({ initialPlaces, placesApiCapped }: Prop
             </TableRow>
           </TableHeader>
           <TableBody>
-            {initialPlaces.length === 0 ? (
+            {places.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={8} className="text-center">
                   <div className="flex flex-col items-center gap-1 py-10 text-sm text-muted-foreground">
@@ -144,7 +212,14 @@ export function ProspectingResultsTable({ initialPlaces, placesApiCapped }: Prop
                     <TableCell className="tabular-nums">
                       {place.rating != null ? place.rating.toFixed(1) : "—"}
                     </TableCell>
-                    <TableCell className="tabular-nums font-medium">{score}</TableCell>
+                    <TableCell className="tabular-nums font-medium">
+                      {place.siteAnalysisStatus === "pending" ||
+                      place.siteAnalysisStatus === "processing" ? (
+                        <span className="text-text-muted text-sm">{t("Analisando...")}</span>
+                      ) : (
+                        score
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge variant={meta.variant}>{t(meta.label)}</Badge>
                     </TableCell>
