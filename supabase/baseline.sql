@@ -18948,10 +18948,6 @@ do $$ begin
   select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='user_organizations') then
   alter publication supabase_realtime add table public.user_organizations;
  end if;
- if exists(select 1 from pg_publication where pubname='supabase_realtime') and not exists(
-  select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='prospected_places') then
-  alter publication supabase_realtime add table public.prospected_places;
- end if;
 end $$;
 
 -- INSERT/reativação aplica escolha assinada; replay ativo retorna antes da escrita.
@@ -23418,6 +23414,18 @@ comment on column public.prospected_places.status_label is
   'Derivado da fórmula de score (lib/prospecting/score.ts), armazenado (não calculado a cada leitura) porque muda de forma assíncrona — ver Nota DIRC em design.md.';
 comment on column public.prospected_places.site_analysis_status is
   'not_applicable = sem website_url (nunca entra na fila do worker); pending/processing/done/failed = ciclo de vida de prospected-site-quality-worker (P2).';
+
+-- ---- prospected_places entra na publicação Realtime (migration 0235) ----
+-- Bloco próprio (não compartilhado com nenhum outro `do $$`) para que uma falha
+-- aqui nunca derrube uma correção não relacionada — e colocado DEPOIS da criação
+-- da tabela acima, ao contrário da tentativa original (revisão final pegou o erro
+-- de posicionamento: rodar isso antes do create table quebra instalação do zero).
+do $$ begin
+ if exists(select 1 from pg_publication where pubname='supabase_realtime') and not exists(
+  select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='prospected_places') then
+  alter publication supabase_realtime add table public.prospected_places;
+ end if;
+end $$;
 
 -- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
 --

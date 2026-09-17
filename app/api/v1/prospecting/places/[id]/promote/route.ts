@@ -83,7 +83,7 @@ export async function POST(
         break;
     }
 
-    return fail(motivo, msg, status, { requestId, detalhe });
+    return fail(motivo, msg, status, { requestId, details: detalhe });
   }
 
   // Sucesso: emite audit e retorna leadId

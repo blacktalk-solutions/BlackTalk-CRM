@@ -5,7 +5,7 @@ import { requireRole } from "@/lib/auth/require-role";
 import { audit } from "@/lib/audit";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fail } from "@/lib/api/wrappers";
-import type { AuthUser } from "@/lib/auth/types";
+import type { AuthUser, Role } from "@/lib/auth/types";
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
@@ -16,8 +16,8 @@ const USER_ID = "11111111-1111-4111-8111-111111111111";
 const PLACE_ID = "55555555-5555-4555-8555-555555555555";
 const SEARCH_ID = "33333333-3333-4333-8333-333333333333";
 
-function mockAuthzOk(role = "manager") {
-  const user = {
+function mockAuthzOk(role: Role = "manager") {
+  const user: AuthUser = {
     id: USER_ID,
     email: "a@example.com",
     full_name: null,
@@ -57,18 +57,29 @@ function placeRow(overrides = {}) {
   };
 }
 
-function makeAdminStub(cfg) {
-  const calls = { selectFilters: [], updateFilters: [] };
+type StubConfig = {
+  selectResult?: { data: unknown; error: unknown };
+  updateError?: { message: string } | null;
+  updateData?: Array<{ id: string }> | null;
+  rpcError?: { message: string } | null;
+};
+
+function makeAdminStub(cfg: StubConfig) {
+  const calls: {
+    selectFilters: unknown[][];
+    updateFilters: unknown[][];
+    rpcCall?: { name: string; params: unknown };
+  } = { selectFilters: [], updateFilters: [] };
   const client = {
-    from(table) {
+    from(table: string) {
       if (table === "prospected_places") {
         return {
           select() {
             return {
-              eq(col, val) {
+              eq(col: string, val: unknown) {
                 calls.selectFilters.push([col, val]);
                 return {
-                  eq(col2, val2) {
+                  eq(col2: string, val2: unknown) {
                     calls.selectFilters.push([col2, val2]);
                     return {
                       maybeSingle() {
@@ -82,12 +93,26 @@ function makeAdminStub(cfg) {
           },
           update() {
             return {
-              eq(col, val) {
+              eq(col: string, val: unknown) {
                 calls.updateFilters.push([col, val]);
                 return {
-                  eq(col2, val2) {
+                  eq(col2: string, val2: unknown) {
                     calls.updateFilters.push([col2, val2]);
-                    return Promise.resolve({ error: cfg.updateError ?? null });
+                    return {
+                      eq(col3: string, val3: unknown) {
+                        calls.updateFilters.push([col3, val3]);
+                        return {
+                          select() {
+                            return Promise.resolve({
+                              data: cfg.updateError
+                                ? null
+                                : (cfg.updateData ?? [{ id: PLACE_ID }]),
+                              error: cfg.updateError ?? null,
+                            });
+                          },
+                        };
+                      },
+                    };
                   },
                 };
               },
@@ -97,7 +122,7 @@ function makeAdminStub(cfg) {
       }
       throw new Error(`unexpected table ${table}`);
     },
-    rpc(name, params) {
+    rpc(name: string, params: unknown) {
       calls.rpcCall = { name, params };
       return Promise.resolve({ data: null, error: cfg.rpcError ?? null });
     },
@@ -105,13 +130,13 @@ function makeAdminStub(cfg) {
   return { client, calls };
 }
 
-function postReq(id) {
+function postReq(id: string) {
   return new NextRequest(`http://localhost/api/v1/prospecting/places/${id}/reanalyze`, {
     method: "POST",
   });
 }
 
-function ctx(id) {
+function ctx(id: string) {
   return { params: Promise.resolve({ id }) };
 }
 
@@ -134,7 +159,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
   it("place inexistente → 404", async () => {
     mockAuthzOk();
     const { client } = makeAdminStub({ selectResult: { data: null, error: null } });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(404);
@@ -143,7 +168,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
   it("cross-tenant → 404", async () => {
     mockAuthzOk();
     const { client } = makeAdminStub({ selectResult: { data: null, error: null } });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(404);
@@ -157,7 +182,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
         error: null,
       },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(409);
@@ -171,7 +196,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
         error: null,
       },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(409);
@@ -182,7 +207,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
     const { client } = makeAdminStub({
       selectResult: { data: placeRow({ site_analysis_status: "done" }), error: null },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(409);
@@ -196,7 +221,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
         error: null,
       },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(409);
@@ -210,7 +235,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
         error: null,
       },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(200);
@@ -223,26 +248,49 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
     expect(calls.updateFilters).toEqual([
       ["id", PLACE_ID],
       ["organization_id", ORG_ID],
+      ["site_analysis_status", "failed"],
     ]);
-    expect(calls.rpcCall.name).toBe("emit_event");
+    expect(calls.rpcCall?.name).toBe("emit_event");
     expect(vi.mocked(audit)).toHaveBeenCalledWith(
       expect.objectContaining({ action: "prospecting.place_reanalyze" })
     );
   });
 
-  it("emit_event fails → 200 (graceful)", async () => {
+  it("emit_event falha → 500, não atualiza status (fica 'failed', botão de retry continua aparecendo)", async () => {
     mockAuthzOk();
-    const { client } = makeAdminStub({
+    const { client, calls } = makeAdminStub({
       selectResult: {
         data: placeRow({ site_analysis_status: "failed" }),
         error: null,
       },
       rpcError: { message: "boom" },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+    const { POST } = await import("./route");
+    const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
+    expect(res.status).toBe(500);
+    // Emit falhou antes do update rodar — status nunca é tocado.
+    expect(calls.updateFilters).toEqual([]);
+  });
+
+  it("worker já ganhou a corrida (claim perdido) → 200 already_progressed, não reverte status", async () => {
+    mockAuthzOk();
+    const { client, calls } = makeAdminStub({
+      selectResult: {
+        data: placeRow({ site_analysis_status: "failed" }),
+        error: null,
+      },
+      updateData: [], // 0 linhas casaram o CAS: o worker já moveu pra processing/done
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.status).toBe("already_progressed");
+    // O evento ainda foi emitido (não é esse o problema) — só o update final
+    // é que respeitou o CAS e não reverteu nada.
+    expect(calls.rpcCall?.name).toBe("emit_event");
   });
 
   it("select error → 500", async () => {
@@ -250,7 +298,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
     const { client } = makeAdminStub({
       selectResult: { data: null, error: { message: "boom" } },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(500);
@@ -265,7 +313,7 @@ describe("POST /api/v1/prospecting/places/[id]/reanalyze", () => {
       },
       updateError: { message: "boom" },
     });
-    vi.mocked(createAdminClient).mockReturnValue(client);
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
     const { POST } = await import("./route");
     const res = await POST(postReq(PLACE_ID), ctx(PLACE_ID));
     expect(res.status).toBe(500);

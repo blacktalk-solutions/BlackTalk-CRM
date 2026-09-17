@@ -77,8 +77,7 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
 
   test("busca, visualiza resultados com scores, promove, confirma link e lead no funil", async ({
     page,
-    testInfo,
-  }) => {
+  }, testInfo) => {
     let searchId: string | undefined;
     let leadId: string | undefined;
     let placeIds: string[] = [];

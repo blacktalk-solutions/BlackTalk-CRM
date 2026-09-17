@@ -51,10 +51,7 @@ export async function promoteToLead(
   // 1. Lê a linha de prospected_places
   const { data: place, error: placeErr } = await db
     .from("prospected_places")
-    .select(
-      "id, name, phone_number, address, rating, review_count, " +
-        "place_id, website_url, promoted_lead_id",
-    )
+    .select("id, name, phone_number, address, rating, review_count, place_id, website_url, promoted_lead_id")
     .eq("organization_id", organizationId)
     .eq("id", placeId)
     .maybeSingle();

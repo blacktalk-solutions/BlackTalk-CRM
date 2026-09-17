@@ -22,7 +22,7 @@ import { createClient } from "@/lib/supabase/server";
 import {
   PLACES_SELECT_COLUNAS,
   type ProspectedPlaceRow,
-} from "../../searches/route";
+} from "../../../searches/route";
 
 export const dynamic = "force-dynamic";
 
@@ -103,12 +103,20 @@ export async function POST(
     );
   }
 
-  // Event emitted successfully: now update status to pending
-  const { error: updateErr } = await admin
+  // Event emitted successfully: now update status to pending. CAS guard
+  // (mesmo padrão do claim otimista do worker, prospecting-site-quality-worker.ts) —
+  // só avança se a linha ainda estiver 'failed'. Sem essa guarda, o worker (loop
+  // rápido, não cron) poderia processar o evento recém-emitido e gravar
+  // 'processing'/'done' ANTES desse update rodar; um update incondicional
+  // sobrescreveria isso de volta pra 'pending', perdendo uma análise que já
+  // tinha terminado com sucesso, sem chance de recuperação automática.
+  const { data: updated, error: updateErr } = await admin
     .from("prospected_places")
     .update({ site_analysis_status: "pending" })
     .eq("id", placeId)
-    .eq("organization_id", org.orgId);
+    .eq("organization_id", org.orgId)
+    .eq("site_analysis_status", "failed")
+    .select("id");
 
   if (updateErr) {
     return fail(
@@ -117,6 +125,13 @@ export async function POST(
       500,
       { requestId }
     );
+  }
+
+  if (!updated?.length) {
+    // O worker já ganhou a corrida e avançou a linha (pra 'processing'/'done')
+    // entre o emit_event acima e este update — não é erro, é uma análise que já
+    // está em andamento ou já terminou. Trata como sucesso: nada a reverter.
+    return ok({ id: placeId, status: "already_progressed" }, { status: 200, requestId });
   }
 
   void audit({
