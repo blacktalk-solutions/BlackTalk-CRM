@@ -17,24 +17,55 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // não caminho relativo.
 
 // ─── Playwright: NUNCA abre um browser de verdade no teste ─────────────────
-const gotoMock = vi.fn();
-const contentMock = vi.fn();
-const innerTextMock = vi.fn();
-const contextCloseMock = vi.fn(async () => {});
-const browserCloseMock = vi.fn(async () => {});
-const newPageMock = vi.fn(async () => ({
-  goto: gotoMock,
-  content: contentMock,
-  innerText: innerTextMock,
-}));
-const newContextMock = vi.fn(async () => ({
-  newPage: newPageMock,
-  close: contextCloseMock,
-}));
-const launchMock = vi.fn(async () => ({
-  newContext: newContextMock,
-  close: browserCloseMock,
-}));
+//
+// `vi.hoisted()` em vez de `const` soltos: o arquivo testado
+// (`workers/prospecting-site-quality-worker.ts`) é importado estaticamente
+// mais abaixo (linha ~135), e imports estáticos são resolvidos ANTES do
+// corpo do módulo de teste rodar — quando isso acontece, o `import
+// { chromium } from "playwright"` daquele arquivo já aciona a factory do
+// `vi.mock` abaixo, e ela tentava ler `launchMock` antes da linha `const
+// launchMock = vi.fn(...)` ter executado (TDZ: "Cannot access 'launchMock'
+// before initialization"). `vi.hoisted()` sobe esses `vi.fn()` pro mesmo
+// estágio de hoisting do `vi.mock`, eliminando a corrida.
+const {
+  gotoMock,
+  contentMock,
+  innerTextMock,
+  contextCloseMock,
+  browserCloseMock,
+  newPageMock,
+  newContextMock,
+  launchMock,
+} = vi.hoisted(() => {
+  const gotoMock = vi.fn();
+  const contentMock = vi.fn();
+  const innerTextMock = vi.fn();
+  const contextCloseMock = vi.fn(async () => {});
+  const browserCloseMock = vi.fn(async () => {});
+  const newPageMock = vi.fn(async () => ({
+    goto: gotoMock,
+    content: contentMock,
+    innerText: innerTextMock,
+  }));
+  const newContextMock = vi.fn(async () => ({
+    newPage: newPageMock,
+    close: contextCloseMock,
+  }));
+  const launchMock = vi.fn(async () => ({
+    newContext: newContextMock,
+    close: browserCloseMock,
+  }));
+  return {
+    gotoMock,
+    contentMock,
+    innerTextMock,
+    contextCloseMock,
+    browserCloseMock,
+    newPageMock,
+    newContextMock,
+    launchMock,
+  };
+});
 
 vi.mock("playwright", () => ({
   chromium: { launch: launchMock },
@@ -64,24 +95,31 @@ interface PlaceRowFixture {
   site_analysis_status: string;
 }
 
-const updateSpy = vi.fn();
-const state: {
-  placeRow: PlaceRowFixture | null;
-  placeError: { message: string } | null;
-  selectThrows: Error | null;
-  claimOk: boolean;
-  claimError: { message: string } | null;
-  claimThrows: Error | null;
-  finalUpdateError: { message: string } | null;
-} = {
-  placeRow: null,
-  placeError: null,
-  selectThrows: null,
-  claimOk: true,
-  claimError: null,
-  claimThrows: null,
-  finalUpdateError: null,
-};
+// Mesmo motivo do `vi.hoisted()` do bloco do Playwright acima: o worker é
+// importado estaticamente mais abaixo, e esse import aciona a factory do
+// `vi.mock("@/lib/supabase/admin", ...)` antes de `const`s soltos aqui
+// terem rodado.
+const { updateSpy, state } = vi.hoisted(() => {
+  const updateSpy = vi.fn();
+  const state: {
+    placeRow: PlaceRowFixture | null;
+    placeError: { message: string } | null;
+    selectThrows: Error | null;
+    claimOk: boolean;
+    claimError: { message: string } | null;
+    claimThrows: Error | null;
+    finalUpdateError: { message: string } | null;
+  } = {
+    placeRow: null,
+    placeError: null,
+    selectThrows: null,
+    claimOk: true,
+    claimError: null,
+    claimThrows: null,
+    finalUpdateError: null,
+  };
+  return { updateSpy, state };
+});
 
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({

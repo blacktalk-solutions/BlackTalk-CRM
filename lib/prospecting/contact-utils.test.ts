@@ -32,7 +32,10 @@ describe("contact-utils", () => {
 
     it("should accept numbers already starting with 55", () => {
       expect(normalizePhoneToE164("551133334444")).toBe("551133334444");
-      expect(normalizePhoneToE164("55 11 9999-8888")).toBe("5511999998888");
+      // Passa direto (12 dígitos, já com 55) — não tenta adivinhar/inserir o
+      // "9" de celular: "9999-8888" sem o 9 pode ser um fixo válido de 8
+      // dígitos, não dá pra saber com certeza a partir só dos dígitos.
+      expect(normalizePhoneToE164("55 11 9999-8888")).toBe("551199998888");
     });
 
     it("should return null for numbers with wrong length", () => {
@@ -54,14 +57,21 @@ describe("contact-utils", () => {
 
     it("should build valid link with company name", () => {
       const link = buildWhatsAppLink("1133334444", "Acme Corp");
+      // Constrói o esperado com o mesmo encodeURIComponent usado pela função
+      // real, em vez de uma string codificada à mão (o valor anterior tinha
+      // acentos/reticências não codificados corretamente e nunca batia).
+      const expectedMessage =
+        "Olá! Vi que Acme Corp ainda não tem um site — a Black Talk Digital pode ajudar com isso. Podemos conversar?";
       expect(link).toBe(
-        "https://wa.me/551133334444?text=Olá!%20Vi%20que%20Acme%20Corp%20ainda%20não%20tem%20um%20site%20—%20a%20Black%20Talk%20Digital%20pode%20ajudar%20com%20isso.%20Podemos%20conversar?"
+        `https://wa.me/551133334444?text=${encodeURIComponent(expectedMessage)}`
       );
     });
 
     it("should handle company name with generic fallback", () => {
       const link = buildWhatsAppLink("1133334444", null);
-      expect(link).toContain("sua empresa");
+      // "sua empresa" vira "sua%20empresa" depois do encodeURIComponent —
+      // o espaço nunca sobrevive literal numa URL.
+      expect(link).toContain("sua%20empresa");
       expect(link).toContain("https://wa.me/551133334444");
     });
 

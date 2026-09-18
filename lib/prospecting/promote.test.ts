@@ -20,7 +20,7 @@ const LEAD_ID = "77777777-7777-4777-8777-777777777777";
 const EXISTING_CONTACT_ID = "88888888-8888-4888-8888-888888888888";
 
 const PHONE_RAW = "1133334444"; // 10 digits, will normalize to +5511333344
-const PHONE_NORMALIZED = "+5511333344"; // normalizePhoneToE164(PHONE_RAW)
+const PHONE_NORMALIZED = "551133334444"; // normalizePhoneToE164(PHONE_RAW) — sem "+", só dígitos
 
 interface PlaceRow {
   id: string;
@@ -85,10 +85,16 @@ function makeClientStub(cfg: ClientCfg) {
                 if (col === "organization_id") calls.selectedPlace.org = val;
                 if (col === "id") calls.selectedPlace.id = val;
                 return {
-                  maybeSingle: () =>
-                    Promise.resolve(
-                      cfg.selectPlace ?? { data: makePlace(), error: null },
-                    ),
+                  eq(col2: string, val2: string) {
+                    if (col2 === "organization_id") calls.selectedPlace!.org = val2;
+                    if (col2 === "id") calls.selectedPlace!.id = val2;
+                    return {
+                      maybeSingle: () =>
+                        Promise.resolve(
+                          cfg.selectPlace ?? { data: makePlace(), error: null },
+                        ),
+                    };
+                  },
                 };
               },
             };
@@ -122,10 +128,16 @@ function makeClientStub(cfg: ClientCfg) {
                 if (col === "organization_id") calls.selectedContact.org = val;
                 if (col === "phone_number") calls.selectedContact.phone = val;
                 return {
-                  maybeSingle: () =>
-                    Promise.resolve(
-                      cfg.selectContact ?? { data: null, error: null },
-                    ),
+                  eq: function (col2: string, val2: string) {
+                    if (col2 === "organization_id") calls.selectedContact!.org = val2;
+                    if (col2 === "phone_number") calls.selectedContact!.phone = val2;
+                    return {
+                      maybeSingle: () =>
+                        Promise.resolve(
+                          cfg.selectContact ?? { data: null, error: null },
+                        ),
+                    };
+                  },
                 };
               },
             };
@@ -186,23 +198,28 @@ function makeClientStub(cfg: ClientCfg) {
                 if (col === "organization_id") calls.selectedStage.org = val;
                 if (col === "pipeline_id") calls.selectedStage.pipeline = val;
                 return {
-                  eq: function (col2: string, val2: unknown) {
+                  eq: function (col2: string, val2: string) {
+                    if (col2 === "pipeline_id") calls.selectedStage!.pipeline = val2;
                     return {
                       eq: function (col3: string, val3: unknown) {
                         return {
                           eq: function (col4: string, val4: unknown) {
                             return {
-                              order: () => ({
-                                limit: () => ({
-                                  maybeSingle: () =>
-                                    Promise.resolve(
-                                      cfg.selectStage ?? {
-                                        data: { id: STAGE_ID },
-                                        error: null,
-                                      },
-                                    ),
-                                }),
-                              }),
+                              eq: function (col5: string, val5: unknown) {
+                                return {
+                                  order: () => ({
+                                    limit: () => ({
+                                      maybeSingle: () =>
+                                        Promise.resolve(
+                                          cfg.selectStage ?? {
+                                            data: { id: STAGE_ID },
+                                            error: null,
+                                          },
+                                        ),
+                                    }),
+                                  }),
+                                };
+                              },
                             };
                           },
                         };
@@ -376,10 +393,11 @@ describe("promoteToLead", () => {
     // Não deve buscar contact por telefone (porque não há / não normalizável)
     expect(calls.selectedContact).toBeUndefined();
 
-    // Deve criar novo contact sem telefone
+    // Deve criar novo contact sem telefone — a chave phone_number nem é
+    // incluída no insert (não é "undefined", está ausente de propósito).
+    expect(calls.insertedContact).not.toHaveProperty("phone_number");
     expect(calls.insertedContact).toEqual(
       expect.objectContaining({
-        phone_number: undefined,
         source: "google_maps_prospecting",
       }),
     );
@@ -460,7 +478,10 @@ describe("promoteToLead", () => {
     expect(resultado.promotado).toBe(false);
     if (!resultado.promotado) {
       expect(resultado.motivo).toBe("erro");
-      expect(resultado.detalhe).toContain("Erro ao criar contact");
+      // promote.ts repassa a mensagem real do erro do banco (útil pra
+      // debugar); "Erro ao criar contact" só é usado como fallback quando
+      // o erro não tem mensagem nenhuma — não é um prefixo somado.
+      expect(resultado.detalhe).toBe("violação de constraint única");
     }
   });
 
