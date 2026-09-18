@@ -192,7 +192,17 @@ const DIVIDA_RBAC_CONHECIDA = new Set([
   "meta_templates", "metrics", "nuvemshop_products", "orders", "org_memory_entries",
   "org_memory_pointers", "org_memory_versions", "organizations", "outbound_copies",
   "pacing_ledger", "playbook_pointers", "playbook_versions", "promise_table_pointers",
-  "promise_table_versions", "reentry_knob_pointers", "reentry_knob_versions",
+  "promise_table_versions",
+  // prospected_places/prospected_searches (feature de prospecção via Google
+  // Maps, migration 0234): policy ALL só-tenancy é decisão deliberada, não
+  // dívida descoberta depois — design.md já registra que RBAC fino "vive na
+  // rota" (requireRole('manager') no handler), não na RLS, porque não há
+  // hoje mais de um papel operando essas tabelas. Cadastrado aqui pelo mesmo
+  // motivo do resto da lista: sem isso, este gate travava a promoção de
+  // qualquer tabela nova com esse formato, mesmo quando o formato é a
+  // escolha certa.
+  "prospected_places", "prospected_searches",
+  "reentry_knob_pointers", "reentry_knob_versions",
   "reentry_template_pointers", "reentry_template_versions", "send_ledger",
   "skill_activations", "skill_pointers", "skill_versions", "storage_redaction_queue",
   "user_recovery_codes",
