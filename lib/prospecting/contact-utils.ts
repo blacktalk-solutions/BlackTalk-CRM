@@ -3,10 +3,12 @@
  */
 
 /**
- * Normalizes a phone number for E.164 format (for wa.me links).
+ * Normalizes a phone number to real E.164 format (leading `+`, digits only
+ * after that) — the format `contacts.phone_number` requires at the database
+ * level (`contacts_phone_e164_format` CHECK, `^\+\d{8,15}$`).
  *
  * Input: raw phone number as stored in database (may have spaces, dashes, etc.)
- * Output: E.164 format with country code (55 for Brazil) and only digits
+ * Output: `+55...` for Brazilian numbers, or null if it can't be normalized.
  *
  * If the input is invalid/null, returns null.
  */
@@ -27,12 +29,12 @@ export function normalizePhoneToE164(phoneNumber: string | null | undefined): st
   // Assuming Brazilian phone numbers (11-9XXXX-XXXX format when stored)
   if (digitsOnly.startsWith("55")) {
     // Already has country code
-    return digitsOnly.length >= 12 ? digitsOnly : null;
+    return digitsOnly.length >= 12 ? `+${digitsOnly}` : null;
   }
 
   // Brazilian format: (XX)9XXXX-XXXX is 10 digits, prepend 55
   if (digitsOnly.length === 10 || digitsOnly.length === 11) {
-    return `55${digitsOnly}`;
+    return `+55${digitsOnly}`;
   }
 
   return null;
@@ -56,7 +58,10 @@ export function buildWhatsAppLink(
   const message = `Olá! Vi que${companyText} ainda não tem um site — a Black Talk Digital pode ajudar com isso. Podemos conversar?`;
 
   const encodedMessage = encodeURIComponent(message);
-  return `https://wa.me/${normalizedPhone}?text=${encodedMessage}`;
+  // wa.me quer só dígitos, sem o "+" que o E.164 exige — normalizePhoneToE164
+  // devolve E.164 de verdade (formato que contacts.phone_number exige no
+  // banco); aqui é o único lugar que converte pro formato que o wa.me espera.
+  return `https://wa.me/${normalizedPhone.replace(/^\+/, "")}?text=${encodedMessage}`;
 }
 
 /**

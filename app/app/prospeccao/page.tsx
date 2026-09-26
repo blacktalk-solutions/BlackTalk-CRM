@@ -10,6 +10,7 @@ import {
   toSearchDTO,
   type ProspectedSearchRow,
 } from "@/app/api/v1/prospecting/searches/route";
+import { NICHE_SELECT_COLUNAS, toNicheDTO, type NicheRow } from "@/app/api/v1/prospecting/niches/route";
 import { ProspectingSearchForm } from "./_components/ProspectingSearchForm";
 
 export const dynamic = "force-dynamic";
@@ -57,18 +58,28 @@ export default async function ProspeccaoPage() {
 
   const historico = ((data ?? []) as unknown as ProspectedSearchRow[]).map(toSearchDTO);
 
+  // T14 (`.specs/features/prospeccao-nichos-e-enriquecimento/`): a busca
+  // exige escolher um nicho — a lista vem do servidor pra não haver "sem
+  // nicho" piscando antes de um fetch client-side terminar.
+  const { data: nichesData } = await supabase
+    .from("prospecting_niches")
+    .select(NICHE_SELECT_COLUNAS)
+    .eq("organization_id", activeOrg.orgId)
+    .order("created_at", { ascending: false });
+  const niches = ((nichesData ?? []) as unknown as NicheRow[]).map(toNicheDTO);
+
   return (
     <div className="flex h-full flex-col gap-6 p-6">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">{t("Prospecção")}</h1>
         <p className="text-sm text-muted-foreground">
           {t(
-            "Busque negócios no Google Maps por tipo e localidade. Cada resultado já sai com um score de oportunidade para venda de site.",
+            "Busque negócios no Google Maps por tipo e localidade. Escolha um nicho para pontuar os resultados do jeito que faz sentido para o seu critério.",
           )}
         </p>
       </header>
 
-      <ProspectingSearchForm />
+      <ProspectingSearchForm niches={niches} />
 
       {historico.length > 0 ? (
         <section className="flex flex-col gap-2">

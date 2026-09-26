@@ -89,6 +89,8 @@ vi.mock("playwright", () => ({
 interface PlaceRowFixture {
   id: string;
   organization_id: string;
+  search_id: string;
+  place_id: string;
   website_url: string | null;
   rating: number | null;
   review_count: number | null;
@@ -99,8 +101,9 @@ interface PlaceRowFixture {
 // importado estaticamente mais abaixo, e esse import aciona a factory do
 // `vi.mock("@/lib/supabase/admin", ...)` antes de `const`s soltos aqui
 // terem rodado.
-const { updateSpy, state } = vi.hoisted(() => {
+const { updateSpy, rpcSpy, state } = vi.hoisted(() => {
   const updateSpy = vi.fn();
+  const rpcSpy = vi.fn();
   const state: {
     placeRow: PlaceRowFixture | null;
     placeError: { message: string } | null;
@@ -109,6 +112,10 @@ const { updateSpy, state } = vi.hoisted(() => {
     claimError: { message: string } | null;
     claimThrows: Error | null;
     finalUpdateError: { message: string } | null;
+    /** T11 — `null` = "sem nicho" (fallback pro shim de pesos legado). */
+    searchRow: { niche_id: string | null } | null;
+    nicheRow: { weights: Record<string, number> } | null;
+    rpcError: { message: string } | null;
   } = {
     placeRow: null,
     placeError: null,
@@ -117,13 +124,40 @@ const { updateSpy, state } = vi.hoisted(() => {
     claimError: null,
     claimThrows: null,
     finalUpdateError: null,
+    searchRow: { niche_id: null },
+    nicheRow: null,
+    rpcError: null,
   };
-  return { updateSpy, state };
+  return { updateSpy, rpcSpy, state };
 });
 
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: (table: string) => {
+      // T11: lookup de nicho (place.search_id → niche_id → weights). Por
+      // padrão devolve "sem nicho" (niche_id null) — o worker cai no MESMO
+      // shim de pesos que reproduz a fórmula anterior a T3/T8, e todo teste
+      // "herdado" que já existia continua batendo os mesmos números sem
+      // precisar saber que este lookup existe. `state.searchRow`/
+      // `state.nicheRow` deixam um teste dedicado (abaixo) sobrescrever isso.
+      if (table === "prospected_searches") {
+        return {
+          select: (_cols: string) => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: state.searchRow, error: null }),
+            }),
+          }),
+        };
+      }
+      if (table === "prospecting_niches") {
+        return {
+          select: (_cols: string) => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: state.nicheRow, error: null }),
+            }),
+          }),
+        };
+      }
       if (table !== "prospected_places") throw new Error(`tabela inesperada no teste: ${table}`);
       return {
         select: (_cols: string) => ({
@@ -165,12 +199,30 @@ vi.mock("@/lib/supabase/admin", () => ({
         },
       };
     },
+    // T11: emissão de `instagram_requested` quando o nicho dá peso a esse sinal.
+    rpc: async (name: string, params: Record<string, unknown>) => {
+      rpcSpy(name, params);
+      return { error: state.rpcError };
+    },
   }),
 }));
 
 import type { EventRow } from "@/lib/event-log/dispatcher";
-import { scoreFinal } from "@/lib/prospecting/score";
+import { scoreFinal, type NicheWeights } from "@/lib/prospecting/score";
 import { analyzeProspectSiteQuality } from "@/workers/prospecting-site-quality-worker";
+
+/** Mesmo shim `LEGACY_FULL_WEIGHT_SHIM` do worker (T3) — reproduz a fórmula de antes de T3, sem escala. */
+const LEGACY_FULL_WEIGHT_SHIM: NicheWeights = {
+  site: 100,
+  instagram: 0,
+  whatsapp: 0,
+  email: 0,
+  telefone: 0,
+  reputacao: 100,
+  cnpj: 0,
+  endereco: 0,
+  linkedin: 0,
+};
 
 function eventRow(overrides: Partial<EventRow> = {}): EventRow {
   return {
@@ -191,6 +243,8 @@ function placeRow(overrides: Partial<PlaceRowFixture> = {}): PlaceRowFixture {
   return {
     id: "place1",
     organization_id: "org1",
+    search_id: "search1",
+    place_id: "gp-1",
     website_url: "https://example.com",
     rating: 4.8,
     review_count: 25,
@@ -214,6 +268,9 @@ describe("analyzeProspectSiteQuality", () => {
     state.claimError = null;
     state.claimThrows = null;
     state.finalUpdateError = null;
+    state.searchRow = { niche_id: null }; // T11: sem nicho por padrão -> shim legado, mesmos números de sempre
+    state.nicheRow = null;
+    state.rpcError = null;
     innerTextMock.mockResolvedValue("");
   });
 
@@ -235,12 +292,15 @@ describe("analyzeProspectSiteQuality", () => {
     // `loadTimeMs` real (mock resolve síncrono) fica bem abaixo de 3000ms;
     // qualquer valor pequeno cai no mesmo ramo da fórmula, então 0 aqui
     // reproduz fielmente o branch que o worker vai exercitar.
-    const esperado = scoreFinal({
-      hasWebsite: true,
-      rating: 4.8,
-      reviewCount: 25,
-      siteAnalysis: { reachable: true, mobileResponsive: true, loadTimeMs: 0 },
-    });
+    const esperado = scoreFinal(
+      {
+        hasWebsite: true,
+        rating: 4.8,
+        reviewCount: 25,
+        siteAnalysis: { reachable: true, mobileResponsive: true, loadTimeMs: 0 },
+      },
+      LEGACY_FULL_WEIGHT_SHIM,
+    );
     const patch = lastUpdatePatch();
     expect(patch).toMatchObject({
       site_analysis_status: "done",
@@ -379,12 +439,15 @@ describe("analyzeProspectSiteQuality", () => {
 
     expect(result).toEqual({ consumer_key: "prospecting_site_quality_v1", status: "ok" });
 
-    const esperado = scoreFinal({
-      hasWebsite: true,
-      rating: 4.8,
-      reviewCount: 25,
-      siteAnalysis: { reachable: false, mobileResponsive: true, loadTimeMs: 0 },
-    });
+    const esperado = scoreFinal(
+      {
+        hasWebsite: true,
+        rating: 4.8,
+        reviewCount: 25,
+        siteAnalysis: { reachable: false, mobileResponsive: true, loadTimeMs: 0 },
+      },
+      LEGACY_FULL_WEIGHT_SHIM,
+    );
     const patch = lastUpdatePatch();
     expect(patch).toMatchObject({
       site_analysis_status: "done",
@@ -428,5 +491,196 @@ describe("analyzeProspectSiteQuality", () => {
       error: expect.stringContaining("ETIMEDOUT"),
     });
     expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  // ─── T11 — encadeamento do Instagram ────────────────────────────────────
+
+  it("12. HTML com link de Instagram + nicho com peso>0 → link extraído e passado no evento", async () => {
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue(
+      '<html><body><a href="https://www.instagram.com/clinica.ospe/">Instagram</a></body></html>',
+    );
+    state.searchRow = { niche_id: "niche1" };
+    state.nicheRow = { weights: { instagram: 15 } };
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    expect(rpcSpy).toHaveBeenCalledWith(
+      "emit_event",
+      expect.objectContaining({
+        p_event_type: "prospected_place.instagram_requested",
+        p_entity_id: "place1",
+        p_payload: expect.objectContaining({
+          prospected_place_id: "place1",
+          search_id: "search1",
+          instagram_link: "https://www.instagram.com/clinica.ospe/",
+        }),
+      }),
+    );
+  });
+
+  it("13. HTML sem link de Instagram + nicho com peso>0 → evento ainda emitido, com instagram_link=null", async () => {
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue("<html><body>sem redes sociais aqui</body></html>");
+    state.searchRow = { niche_id: "niche1" };
+    state.nicheRow = { weights: { instagram: 15 } };
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    expect(rpcSpy).toHaveBeenCalledWith(
+      "emit_event",
+      expect.objectContaining({
+        p_event_type: "prospected_place.instagram_requested",
+        p_payload: expect.objectContaining({ instagram_link: null }),
+      }),
+    );
+  });
+
+  it("14. nicho com weights.instagram === 0 → NÃO emite instagram_requested", async () => {
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue(
+      '<html><body><a href="https://www.instagram.com/clinica.ospe/">Instagram</a></body></html>',
+    );
+    state.searchRow = { niche_id: "niche1" };
+    state.nicheRow = { weights: { instagram: 0 } };
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
+  it("15. score final usa os pesos DE VERDADE do nicho da busca (não mais o shim legado)", async () => {
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue("<html><body></body></html>");
+    state.searchRow = { niche_id: "niche1" };
+    state.nicheRow = { weights: { site: 25, instagram: 0, whatsapp: 0, email: 0, telefone: 0, reputacao: 0, cnpj: 0, endereco: 0, linkedin: 0 } };
+
+    await analyzeProspectSiteQuality(eventRow());
+
+    const esperado = scoreFinal(
+      { hasWebsite: true, rating: 4.8, reviewCount: 25, siteAnalysis: { reachable: true, mobileResponsive: false, loadTimeMs: 0 } },
+      { site: 25, instagram: 0, whatsapp: 0, email: 0, telefone: 0, reputacao: 0, cnpj: 0, endereco: 0, linkedin: 0 },
+    );
+    const patch = lastUpdatePatch();
+    expect(patch.score_final).toBe(esperado.score);
+    // Prova que NÃO é mais o shim legado (que daria um número bem maior aqui).
+    expect(patch.score_final).not.toBe(
+      scoreFinal(
+        { hasWebsite: true, rating: 4.8, reviewCount: 25, siteAnalysis: { reachable: true, mobileResponsive: false, loadTimeMs: 0 } },
+        LEGACY_FULL_WEIGHT_SHIM,
+      ).score,
+    );
+  });
+
+  it("16. falha ao emitir instagram_requested não desfaz a análise já concluída (fire-and-forget)", async () => {
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue("<html><body></body></html>");
+    state.searchRow = { niche_id: "niche1" };
+    state.nicheRow = { weights: { instagram: 15 } };
+    state.rpcError = { message: "emit_event indisponível" };
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    const patch = lastUpdatePatch();
+    expect(patch.site_analysis_status).toBe("done");
+  });
+
+  // ─── Raio-x do site: botão WhatsApp / pixel Meta / tag Google Ads / GA / rodapé ──
+
+  it("17. HTML com todos os 4 sinais de marketing presentes + rodapé do ano corrente → todos true, desatualizado=false", async () => {
+    const anoCorrente = new Date().getFullYear();
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue(
+      `<html><body>
+        <a href="https://wa.me/5511999998888">Fale no WhatsApp</a>
+        <script src="https://connect.facebook.net/en_US/fbevents.js"></script>
+        <script>gtag('config', 'AW-123456789');</script>
+        <script src="https://www.googletagmanager.com/gtag/js?id=G-ABCDEF"></script>
+      </body></html>`,
+    );
+    innerTextMock.mockResolvedValue(`Fale no WhatsApp © ${anoCorrente} Minha Empresa`);
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    const patch = lastUpdatePatch();
+    expect(patch.site_analysis_result).toMatchObject({
+      hasWhatsappButton: true,
+      hasMetaPixel: true,
+      hasGoogleAdsPixel: true,
+      hasGoogleAnalytics: true,
+      copyrightYear: anoCorrente,
+      desatualizado: false,
+    });
+  });
+
+  it("18. HTML sem nenhum dos 4 sinais de marketing e sem rodapé → todos false, copyrightYear null, desatualizado false", async () => {
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue("<html><body>página simples, sem nada disso</body></html>");
+    innerTextMock.mockResolvedValue("página simples, sem nada disso");
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    expect(result.status).toBe("ok");
+    const patch = lastUpdatePatch();
+    expect(patch.site_analysis_result).toMatchObject({
+      hasWhatsappButton: false,
+      hasMetaPixel: false,
+      hasGoogleAdsPixel: false,
+      hasGoogleAnalytics: false,
+      copyrightYear: null,
+      desatualizado: false,
+    });
+  });
+
+  it("19. rodapé com mais de 1 ano de atraso → desatualizado=true", async () => {
+    const anoAntigo = new Date().getFullYear() - 3;
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue("<html><body>site parado</body></html>");
+    innerTextMock.mockResolvedValue(`Copyright ${anoAntigo} Minha Empresa`);
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    const patch = lastUpdatePatch();
+    expect(patch.site_analysis_result).toMatchObject({ copyrightYear: anoAntigo, desatualizado: true });
+  });
+
+  it("20. rodapé do ano anterior (folga de 1 ano) → NÃO é desatualizado", async () => {
+    const anoPassado = new Date().getFullYear() - 1;
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue("<html><body>site ok</body></html>");
+    innerTextMock.mockResolvedValue(`© ${anoPassado}`);
+
+    const result = await analyzeProspectSiteQuality(eventRow());
+
+    const patch = lastUpdatePatch();
+    expect(patch.site_analysis_result).toMatchObject({ copyrightYear: anoPassado, desatualizado: false });
+  });
+
+  it("21. raio-x não influencia score_final nem status_label — só site/reputação (mesmo score de antes do raio-x existir)", async () => {
+    gotoMock.mockResolvedValue({ status: () => 200 });
+    contentMock.mockResolvedValue(
+      '<html><head><meta name="viewport" content="width=device-width"></head><body><a href="https://wa.me/5511999998888">zap</a></body></html>',
+    );
+    innerTextMock.mockResolvedValue("© 2019 empresa bem antiga");
+
+    await analyzeProspectSiteQuality(eventRow());
+
+    const esperado = scoreFinal(
+      {
+        hasWebsite: true,
+        rating: 4.8,
+        reviewCount: 25,
+        siteAnalysis: { reachable: true, mobileResponsive: true, loadTimeMs: 0 },
+      },
+      LEGACY_FULL_WEIGHT_SHIM,
+    );
+    const patch = lastUpdatePatch();
+    expect(patch.score_final).toBe(esperado.score);
+    expect(patch.status_label).toBe(esperado.label);
   });
 });

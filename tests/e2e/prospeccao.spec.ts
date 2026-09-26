@@ -336,7 +336,10 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
         .maybeSingle();
 
       expect(leadData).toBeDefined();
-      expect((leadData as any)?.contacts?.name).toBe("Clínica Odontológica Nova");
+      const leadContactName = (
+        leadData as { contacts?: { name?: string } | null } | null
+      )?.contacts?.name;
+      expect(leadContactName).toBe("Clínica Odontológica Nova");
       expect(leadData?.organization_id).toBe(orgId);
 
     } finally {
@@ -387,6 +390,275 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
         }
       } catch (cleanupErr) {
         console.error("[cleanup] falhou (não mascara o erro do teste):", cleanupErr);
+      }
+    }
+  });
+});
+
+/**
+ * E2E de T17 (`.specs/features/prospeccao-nichos-e-enriquecimento/`) —
+ * jornada completa: criar nicho pelo wizard (T13) → rodar busca escolhendo
+ * esse nicho (T14) → ver resultado reprovado nos requisitos escondido por
+ * padrão e revelado pelo chip → abrir a ficha (T15), ver os 6 blocos
+ * incluindo um "ainda não consultado" (vazio) e um "não encontrado" (rodou,
+ * não achou) → editar o nicho → confirmar que a busca antiga não mudou.
+ *
+ * Mesma ressalva da spec original: Places/Apify/Receita continuam mockados —
+ * a busca em si é seedada direto no banco (bypassa a Places API real), só a
+ * criação/edição do NICHO (que não depende de API externa nenhuma) roda pela
+ * UI de verdade, exercitando o wizard e a ficha ponta a ponta.
+ */
+test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () => {
+  test.setTimeout(120_000);
+  test.use({ actionTimeout: 10_000 });
+
+  test("cria nicho pelo wizard, busca, reprovado escondido/revelado, ficha com 6 blocos, editar não muda busca antiga", async ({
+    page,
+  }) => {
+    let nicheId: string | undefined;
+    let searchId: string | undefined;
+    let placeIds: string[] = [];
+    const nicheName = `E2E Nicho ${ts}`;
+
+    const { url: sbUrl, serviceRole: sbKey } = loadSupabaseConfig();
+    const admin = createClient(sbUrl, sbKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+
+    try {
+      // ═══ Pré-condição: organização e manager do seed E2E ═══
+
+      const { data: orgData } = await admin
+        .from("organizations")
+        .select("id")
+        .eq("slug", "e2e-test-org")
+        .maybeSingle();
+      const orgId = (orgData as { id: string } | null)?.id;
+      if (!orgId) throw new Error("Organização E2E não encontrada — rode seed-e2e-credentials.ts");
+
+      const managerEmail = creds.users.manager?.email;
+      if (!managerEmail) throw new Error("Manager email não encontrado em .e2e-creds.json");
+      const { data: managerUsers } = await admin.auth.admin.listUsers();
+      const managerId = managerUsers.users.find((u) => u.email === managerEmail)?.id;
+      if (!managerId) throw new Error("Manager ID não encontrado na auth");
+
+      await login(page, managerEmail);
+
+      // ═══ Step 1: cria o nicho pelo wizard (T13) ═══
+
+      await page.goto(`${APP_URL}/app/prospeccao/nichos`);
+      await expect(page.getByRole("heading", { name: "Nichos de prospecção" })).toBeVisible();
+      await page.getByTestId("niche-novo").click();
+
+      await page.getByLabel("Nome do nicho").fill(nicheName);
+      await page.getByLabel("O que você vende para esse nicho").fill("venda de site");
+      await page
+        .getByLabel("Como esse cliente aparece no Google Maps (um termo por linha)")
+        .fill(`clínica e2e ${ts}`);
+      await page.getByRole("button", { name: "Próximo" }).click(); // negócio -> tamanho
+
+      // Mínimo de 5 avaliações — o place "reprovado" seedado abaixo tem menos que isso de propósito.
+      await page.getByLabel("Mínimo de avaliações no Google").fill("5");
+      await page.getByRole("button", { name: "Próximo" }).click(); // tamanho -> pesos
+
+      // Pesos padrão sugeridos já somam 100 — segue direto pra revisão.
+      await page.getByRole("button", { name: "Próximo" }).click(); // pesos -> revisão
+
+      const [criarResponse] = await Promise.all([
+        page.waitForResponse(
+          (r) => r.url().includes("/api/v1/prospecting/niches") && r.request().method() === "POST",
+        ),
+        page.getByRole("button", { name: "Salvar nicho" }).click(),
+      ]);
+      const criarBody = (await criarResponse.json()) as { data: { id: string } };
+      nicheId = criarBody.data.id;
+      expect(nicheId).toBeTruthy();
+
+      // Wizard fecha, volta pra lista, e o nicho novo aparece nela.
+      await expect(page.getByText(nicheName)).toBeVisible({ timeout: 10_000 });
+
+      // ═══ Step 2: seed da busca + 2 resultados (bypassa a Places API real) ═══
+      //
+      // Place A: passa nos requisitos (50 avaliações >= mínimo de 5), com
+      // site (bloco Site com achado), Instagram AINDA NÃO consultado (bloco
+      // vazio de propósito) e CNPJ consultado sem achar nada (bloco
+      // "não encontrado" + motivo).
+      // Place B: reprova (2 avaliações < mínimo de 5) — deve ficar escondido
+      // por padrão na tabela.
+
+      searchId = randomUUID();
+      const { error: searchError } = await admin.from("prospected_searches").insert({
+        id: searchId,
+        organization_id: orgId,
+        requested_by: managerId,
+        niche_id: nicheId,
+        business_type: `E2E Nicho Busca ${ts}`,
+        location: `E2E São Paulo ${ts}`,
+        service_type: "venda de site",
+        result_count: 2,
+        places_api_capped: false,
+        created_at: new Date().toISOString(),
+      });
+      if (searchError) throw new Error(`Falha ao seed busca: ${searchError.message}`);
+
+      const placeAId = randomUUID();
+      const placeBId = randomUUID();
+      placeIds = [placeAId, placeBId];
+
+      const { error: placesError } = await admin.from("prospected_places").insert([
+        {
+          id: placeAId,
+          search_id: searchId,
+          organization_id: orgId,
+          place_id: "gmap-e2e-a",
+          name: `Clínica Aprovada ${ts}`,
+          address: "Rua A, 1 - São Paulo, SP",
+          phone_number: "+5511988887777",
+          phone_number_normalized: "+5511988887777",
+          website_url: "https://clinica-aprovada-e2e.com.br",
+          rating: 4.7,
+          review_count: 50,
+          score_initial: 80,
+          score_final: 80,
+          status_label: "oportunidade",
+          site_analysis_status: "done",
+          site_analysis_result: { reachable: true, mobileResponsive: true, loadTimeMs: 800 },
+          requisitos_ok: true,
+          motivo_requisitos: null,
+          instagram_status: "pending",
+          instagram_data: null,
+          cnpj_status: "done",
+          cnpj_data: { motivo: "nenhum CNPJ encontrado na pesquisa" },
+          email: null,
+          promoted_lead_id: null,
+          promoted_at: null,
+        },
+        {
+          id: placeBId,
+          search_id: searchId,
+          organization_id: orgId,
+          place_id: "gmap-e2e-b",
+          name: `Clínica Reprovada ${ts}`,
+          address: "Rua B, 2 - São Paulo, SP",
+          phone_number: "+5511999998888",
+          phone_number_normalized: "+5511999998888",
+          website_url: null,
+          rating: 3.5,
+          review_count: 2,
+          score_initial: 90,
+          score_final: null,
+          status_label: "quente",
+          site_analysis_status: "not_applicable",
+          site_analysis_result: null,
+          requisitos_ok: false,
+          motivo_requisitos: "2 avaliações (mínimo 5)",
+          instagram_status: "not_applicable",
+          instagram_data: null,
+          cnpj_status: "pending",
+          cnpj_data: null,
+          email: null,
+          promoted_lead_id: null,
+          promoted_at: null,
+        },
+      ]);
+      if (placesError) throw new Error(`Falha ao seed places: ${placesError.message}`);
+
+      // ═══ Step 3: resultado reprovado escondido por padrão, chip revela ═══
+
+      await page.goto(`${APP_URL}/app/prospeccao/${searchId}`);
+      const linhas = page.locator('[data-testid="prospeccao-linha"]');
+      await expect(linhas).toHaveCount(1);
+      await expect(page.getByText(`Clínica Aprovada ${ts}`)).toBeVisible();
+      await expect(page.getByText(`Clínica Reprovada ${ts}`)).not.toBeVisible();
+
+      const chip = page.getByTestId("prospeccao-toggle-reprovados");
+      await expect(chip).toContainText("1");
+      await chip.click();
+      await expect(linhas).toHaveCount(2);
+      await expect(page.getByText(`Clínica Reprovada ${ts}`)).toBeVisible();
+      await expect(page.getByTestId("prospeccao-fora-do-perfil").first()).toBeVisible();
+
+      // ═══ Step 4: abre a ficha da linha aprovada, confirma os 6 blocos ═══
+
+      await page.getByRole("link", { name: `Clínica Aprovada ${ts}` }).click();
+      await page.waitForURL(`/app/prospeccao/${searchId}/${placeAId}`);
+
+      await expect(page.getByTestId("ficha-bloco-google")).toBeVisible();
+      await expect(page.getByTestId("ficha-bloco-instagram")).toBeVisible();
+      await expect(page.getByTestId("ficha-bloco-site")).toBeVisible();
+      await expect(page.getByTestId("ficha-bloco-receita")).toBeVisible();
+      await expect(page.getByTestId("ficha-bloco-contato")).toBeVisible();
+      await expect(page.getByTestId("ficha-bloco-venda")).toBeVisible();
+
+      // Instagram: pending -> "ainda não consultado" (bloco vazio, NUNCA erro).
+      await expect(page.getByTestId("ficha-bloco-instagram")).toContainText("Ainda não consultado");
+      // Receita: done, sem achado -> "não encontrado" + motivo, distinto do "não consultado" acima.
+      await expect(page.getByTestId("ficha-bloco-receita")).toContainText("Não encontrado");
+      await expect(page.getByTestId("ficha-bloco-receita")).toContainText(
+        "nenhum CNPJ encontrado na pesquisa",
+      );
+      // Site: done, com achado -> mostra os indicadores, não um estado vazio.
+      await expect(page.getByTestId("ficha-bloco-site")).toContainText("Abrir site");
+
+      // ═══ Step 5: edita o nicho — muda o nome ═══
+
+      await page.goto(`${APP_URL}/app/prospeccao/nichos`);
+      const nicheEditedName = `${nicheName} — editado`;
+      await page
+        .locator("li", { hasText: nicheName })
+        .getByRole("button", { name: "Editar" })
+        .click();
+      const nameInput = page.getByLabel("Nome do nicho");
+      await expect(nameInput).toHaveValue(nicheName);
+      await nameInput.fill(nicheEditedName);
+
+      // "Salvar nicho" só existe no passo "revisão" — precisa avançar os
+      // outros 3 passos de novo (mesmo caminho da criação), mesmo editando.
+      await page.getByRole("button", { name: "Próximo" }).click(); // negocio -> tamanho
+      await page.getByRole("button", { name: "Próximo" }).click(); // tamanho -> pesos
+      await page.getByRole("button", { name: "Próximo" }).click(); // pesos -> revisão
+
+      await Promise.all([
+        page.waitForResponse(
+          (r) => r.url().includes(`/api/v1/prospecting/niches/${nicheId}`) && r.request().method() === "PATCH",
+        ),
+        page.getByRole("button", { name: "Salvar nicho" }).click(),
+      ]);
+      await expect(page.getByText(nicheEditedName)).toBeVisible({ timeout: 10_000 });
+
+      // ═══ Step 6: a busca ANTIGA não mudou (snapshot doctrine, design.md) ═══
+
+      const { data: placeAAfterEdit } = await admin
+        .from("prospected_places")
+        .select("score_initial, score_final, status_label")
+        .eq("id", placeAId)
+        .maybeSingle();
+      expect(placeAAfterEdit?.score_initial).toBe(80);
+      expect(placeAAfterEdit?.score_final).toBe(80);
+      expect(placeAAfterEdit?.status_label).toBe("oportunidade");
+
+      const { data: searchAfterEdit } = await admin
+        .from("prospected_searches")
+        .select("service_type")
+        .eq("id", searchId)
+        .maybeSingle();
+      // CÓPIA do service_type do nicho no momento da busca — editar o nicho
+      // depois não reescreve este campo (design.md, "Data Models").
+      expect(searchAfterEdit?.service_type).toBe("venda de site");
+    } finally {
+      // ═══ Cleanup ═══
+      try {
+        if (placeIds.length > 0) {
+          await admin.from("prospected_places").delete().in("id", placeIds);
+        }
+        if (searchId) {
+          await admin.from("prospected_searches").delete().eq("id", searchId);
+        }
+        if (nicheId) {
+          await admin.from("prospecting_niches").delete().eq("id", nicheId);
+        }
+      } catch (cleanupErr) {
+        console.error("[cleanup T17] falhou (não mascara o erro do teste):", cleanupErr);
       }
     }
   });

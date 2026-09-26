@@ -224,6 +224,17 @@ const PROVA_PROPRIA: readonly Excecao[] = [
     tabela: "prospected_places",
     razao: "tests/invariants/prospecting.test.ts — mesmo arquivo da linha acima, mesma prova para a tabela-filha.",
   },
+  // ─── T1/T12 do plano de nichos e enriquecimento (migration 0236) ───
+  {
+    tabela: "prospecting_niches",
+    razao:
+      "tests/invariants/prospecting.test.ts, describe \"0236 · nichos de " +
+      "prospecção — RLS de prospecting_niches\" — controle positivo (org A " +
+      "cria e lê de volta), leitura E o lado `with check` da escrita negadas " +
+      "cross-tenant com `countAs`/`writeCountAs` reais. Fica fora de TABLES " +
+      "pelo mesmo motivo de prospected_searches/prospected_places (aquele " +
+      "arquivo está congelado).",
+  },
 ];
 
 /**

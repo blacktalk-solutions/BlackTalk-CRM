@@ -202,6 +202,12 @@ const DIVIDA_RBAC_CONHECIDA = new Set([
   // qualquer tabela nova com esse formato, mesmo quando o formato é a
   // escolha certa.
   "prospected_places", "prospected_searches",
+  // prospecting_niches (feature de nichos e enriquecimento, migration 0236):
+  // mesma decisão deliberada de prospected_places/prospected_searches acima,
+  // mesma feature — RBAC fino (requireRole('manager')) vive nas rotas de
+  // `/api/v1/prospecting/niches`, não na RLS (design.md, T1: "RLS: mesmo
+  // padrão de 0234, sem gate de papel").
+  "prospecting_niches",
   "reentry_knob_pointers", "reentry_knob_versions",
   "reentry_template_pointers", "reentry_template_versions", "send_ledger",
   "skill_activations", "skill_pointers", "skill_versions", "storage_redaction_queue",

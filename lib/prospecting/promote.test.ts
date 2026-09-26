@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { promoteToLead, type MotivoSemPromocao, type ResultadoPromocao } from "./promote";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { promoteToLead } from "./promote";
 
 /**
  * T12 — promoteToLead (lib/prospecting/promote.ts).
@@ -20,7 +21,7 @@ const LEAD_ID = "77777777-7777-4777-8777-777777777777";
 const EXISTING_CONTACT_ID = "88888888-8888-4888-8888-888888888888";
 
 const PHONE_RAW = "1133334444"; // 10 digits, will normalize to +5511333344
-const PHONE_NORMALIZED = "551133334444"; // normalizePhoneToE164(PHONE_RAW) — sem "+", só dígitos
+const PHONE_NORMALIZED = "+551133334444"; // normalizePhoneToE164(PHONE_RAW) — E.164 de verdade, com "+"
 
 interface PlaceRow {
   id: string;
@@ -262,7 +263,7 @@ function makeClientStub(cfg: ClientCfg) {
     },
   };
 
-  return { client, calls };
+  return { client: client as unknown as SupabaseClient, calls };
 }
 
 beforeEach(() => {
@@ -277,7 +278,7 @@ describe("promoteToLead", () => {
     });
 
     const resultado = await promoteToLead(
-      client as any,
+      client,
       ORG_ID,
       PLACE_ID,
     );
@@ -365,7 +366,7 @@ describe("promoteToLead", () => {
       selectContact: { data: existingContact },
     });
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     expect(resultado.promotado).toBe(true);
 
@@ -386,7 +387,7 @@ describe("promoteToLead", () => {
       selectPlace: { data: place },
     });
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     expect(resultado.promotado).toBe(true);
 
@@ -409,7 +410,7 @@ describe("promoteToLead", () => {
       selectPlace: { data: place },
     });
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     expect(resultado.promotado).toBe(false);
     if (!resultado.promotado) {
@@ -426,7 +427,7 @@ describe("promoteToLead", () => {
       selectPipeline: { data: null }, // Não encontrou
     });
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     expect(resultado.promotado).toBe(false);
     if (!resultado.promotado) {
@@ -442,7 +443,7 @@ describe("promoteToLead", () => {
       selectStage: { data: null }, // Não encontrou
     });
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     expect(resultado.promotado).toBe(false);
     if (!resultado.promotado) {
@@ -455,7 +456,7 @@ describe("promoteToLead", () => {
       selectPlace: { data: null, error: null },
     });
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     expect(resultado.promotado).toBe(false);
     if (!resultado.promotado) {
@@ -473,7 +474,7 @@ describe("promoteToLead", () => {
       },
     });
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     expect(resultado.promotado).toBe(false);
     if (!resultado.promotado) {
@@ -494,7 +495,7 @@ describe("promoteToLead", () => {
 
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     // Mesmo assim, a promoção é considerada bem-sucedida
     expect(resultado.promotado).toBe(true);
@@ -517,7 +518,7 @@ describe("promoteToLead", () => {
 
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const resultado = await promoteToLead(client as any, ORG_ID, PLACE_ID);
+    const resultado = await promoteToLead(client, ORG_ID, PLACE_ID);
 
     // Mesmo assim, a promoção é bem-sucedida
     expect(resultado.promotado).toBe(true);

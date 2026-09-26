@@ -196,6 +196,42 @@ export const NAV_CATALOG = [
     sidebar: true,
   },
   {
+    // Feature de prospecção via Google Places API (New) — migration 0234/0235,
+    // `.specs/features/prospeccao-google-maps/`. As 14 tasks nunca registraram
+    // um destino de navegação: a tela existia em `/app/prospeccao` sem porta
+    // nenhuma — nem sidebar, nem hub, nem ⌘K. Achado ao testar o fluxo de ponta
+    // a ponta pela primeira vez.
+    //
+    // SEM `sidebar`: mesma doutrina de Produtos/Etapas do funil logo abaixo —
+    // busca de lead novo é atividade em lote (algumas sessões por semana),
+    // não o dia a dia de quem já está com o funil em andamento. Fica atrás de
+    // "Ver tudo em CRM" e buscável no ⌘K.
+    href: "/app/prospeccao",
+    label: "Prospecção",
+    description:
+      "Busque negócios por tipo e localização no Google Maps, com pontuação automática de propensão a fechar.",
+    icon: "MapPin",
+    group: "crm",
+    section: "Encontrar clientes novos",
+    // Mesmo gate da rota (design.md): busca custa API paga, promoção muta o
+    // funil — manager é o mínimo razoável até v1 ganhar RBAC fino.
+    minRole: "manager",
+  },
+  {
+    // T13 de `.specs/features/prospeccao-nichos-e-enriquecimento/`: onde o
+    // operador cadastra o critério (termos, requisitos, pesos) que toda busca
+    // de prospecção passa a exigir escolher (T8). Mesmo grupo/seção da tela de
+    // busca — item 14 do Definition of Done pede porta declarada aqui.
+    href: "/app/prospeccao/nichos",
+    label: "Nichos de prospecção",
+    description: "Cadastre o critério (termos, requisitos, pesos) que a busca de prospecção usa para pontuar.",
+    icon: "Funnel",
+    group: "crm",
+    section: "Encontrar clientes novos",
+    // Mesmo piso da busca/CRUD de nicho na API (requireRole('manager')).
+    minRole: "manager",
+  },
+  {
     // ⚠️ Esta tela nasceu porque a FERRAMENTA já existia sem ela. O agente de IA
     // vinha com "procurar produto na loja" ligada por padrão, lendo uma tabela
     // que ninguém nunca preencheu — e o efeito não era silêncio: era o agente

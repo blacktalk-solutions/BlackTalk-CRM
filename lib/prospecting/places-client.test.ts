@@ -29,6 +29,8 @@ function buildApiPlaces(count: number, prefix: string) {
     websiteUri: "https://example.com",
     rating: 4.5,
     userRatingCount: 30,
+    location: { latitude: -23.55, longitude: -46.63 },
+    googleMapsUri: "https://maps.google.com/?cid=123",
   }));
 }
 
@@ -216,7 +218,7 @@ describe("searchPlaces — zero resultados", () => {
 });
 
 describe("searchPlaces — mapeamento de campos ausentes", () => {
-  it("should map missing optional fields (rating, address, phone, website, reviewCount) to null", async () => {
+  it("should map missing optional fields (rating, address, phone, website, reviewCount, lat/lng, googleMapsUrl) to null", async () => {
     const fetchImpl = vi.fn(async () =>
       fakeResponse(200, {
         places: [
@@ -224,7 +226,7 @@ describe("searchPlaces — mapeamento de campos ausentes", () => {
             id: "place-sem-rating",
             displayName: { text: "Padaria do Zé" },
             // formattedAddress, nationalPhoneNumber, websiteUri, rating,
-            // userRatingCount — todos ausentes de propósito.
+            // userRatingCount, location, googleMapsUri — todos ausentes de propósito.
           },
         ],
       }),
@@ -244,13 +246,16 @@ describe("searchPlaces — mapeamento de campos ausentes", () => {
         websiteUrl: null,
         rating: null,
         reviewCount: null,
+        lat: null,
+        lng: null,
+        googleMapsUrl: null,
       },
     ]);
   });
 });
 
 describe("searchPlaces — field mask", () => {
-  it("should send exactly the 7 expected fields in the X-Goog-FieldMask header, no more and no less", async () => {
+  it("should send exactly the 10 expected fields in the X-Goog-FieldMask header, no more and no less", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => fakeResponse(200, { places: [] }));
 
     await searchPlaces(
@@ -269,6 +274,17 @@ describe("searchPlaces — field mask", () => {
       "places.websiteUri",
       "places.rating",
       "places.userRatingCount",
+      // location/googleMapsUri: tier Pro, sem custo extra por cima do tier
+      // Enterprise que rating/nationalPhoneNumber/websiteUri já pagam (ver
+      // comentário de FIELD_MASK em places-client.ts).
+      "places.location",
+      "places.googleMapsUri",
+      // `nextPageToken` é campo de TOPO (fora de `places[]`) e precisa estar
+      // no field mask como qualquer outro — sem ele a Google nunca manda o
+      // token e a paginação para silenciosamente em 20 sempre. Achado
+      // testando um relato real ("Pizzaria em São Paulo" só trazia 20 quando
+      // a própria Google confirmava ter mais).
+      "nextPageToken",
     ];
 
     expect(fieldMask).toBeDefined();

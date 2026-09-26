@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -16,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { useT } from "@/hooks/i18n/useT";
 import { CircleNotch, MagnifyingGlass } from "@/lib/ui/icons";
+import type { NicheDTO } from "@/app/api/v1/prospecting/niches/route";
 
 interface SearchApiSuccess {
   data: { searchId: string; places: unknown[] };
@@ -24,32 +26,46 @@ interface SearchApiError {
   error: { code: string; message: string };
 }
 
+interface Props {
+  /** Da organização ativa, vindo do Server Component pai (`page.tsx`). */
+  niches: NicheDTO[];
+}
+
 /**
- * Formulário de busca de `/app/prospeccao` (T6).
+ * Formulário de busca de `/app/prospeccao` (T6, `.specs/features/prospeccao-google-maps/`;
+ * seletor de nicho trocando o antigo campo fixo em T14,
+ * `.specs/features/prospeccao-nichos-e-enriquecimento/`).
  *
- * Três campos: tipo de negócio e localidade (texto livre), tipo de serviço
- * (select com um único valor decorativo — v1 só prospecta para "venda de
- * site", `prospectingSearchSchema` em `lib/schemas/prospecting.ts` fecha o
- * vocabulário no servidor). Ao submeter, chama
- * `POST /api/v1/prospecting/searches` e navega pro detalhe da busca —
- * `app/app/prospeccao/[searchId]/page.tsx` é quem renderiza os resultados,
- * então este componente não guarda a lista em estado nenhum.
+ * Três campos: tipo de negócio e localidade (texto livre), e o NICHO — que
+ * substitui o antigo select decorativo de "tipo de serviço" (sempre
+ * `venda_de_site`, T6). Sem nenhum nicho cadastrado na organização, o
+ * formulário orienta a criar um em `/app/prospeccao/nichos` e desabilita a
+ * busca inteira — spec.md, P1, critério 6 ("a tela de busca SHALL orientar a
+ * criar um primeiro, SHALL impedir buscar sem nicho escolhido").
+ *
+ * Ao submeter, chama `POST /api/v1/prospecting/searches` e navega pro
+ * detalhe da busca — `app/app/prospeccao/[searchId]/page.tsx` é quem
+ * renderiza os resultados, então este componente não guarda a lista em
+ * estado nenhum.
  *
  * Erro de API não trava a tela: fica visível e o formulário continua
  * preenchido, pronto pra tentar de novo (padrão de erro inline de
  * `app/app/kanban/_components/ImportarLeads.tsx`).
  */
-export function ProspectingSearchForm() {
+export function ProspectingSearchForm({ niches }: Props) {
   const t = useT();
   const router = useRouter();
   const [businessType, setBusinessType] = useState("");
   const [location, setLocation] = useState("");
+  const [nicheId, setNicheId] = useState<string>(niches[0]?.id ?? "");
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
+  const semNicho = niches.length === 0;
+
   async function buscar(e: React.FormEvent) {
     e.preventDefault();
-    if (!businessType.trim() || !location.trim() || enviando) return;
+    if (!businessType.trim() || !location.trim() || !nicheId || enviando) return;
 
     setEnviando(true);
     setErro(null);
@@ -60,7 +76,7 @@ export function ProspectingSearchForm() {
         body: JSON.stringify({
           businessType: businessType.trim(),
           location: location.trim(),
-          serviceType: "venda_de_site",
+          nicheId,
         }),
       });
       const json = (await res.json()) as SearchApiSuccess | SearchApiError;
@@ -82,6 +98,21 @@ export function ProspectingSearchForm() {
   return (
     <Card>
       <CardContent className="p-6">
+        {semNicho ? (
+          <div
+            className="mb-4 flex flex-col items-start gap-2 rounded-lg border border-border bg-muted/40 p-4 text-sm"
+            data-testid="prospeccao-sem-nicho"
+          >
+            <p className="font-medium">{t("Você ainda não tem nenhum nicho de prospecção cadastrado.")}</p>
+            <p className="text-muted-foreground">
+              {t("Um nicho define os termos de busca, os requisitos e os pesos que decidem se um resultado é um bom lead. Crie o primeiro para poder buscar.")}
+            </p>
+            <Button asChild size="sm">
+              <Link href="/app/prospeccao/nichos">{t("Criar meu primeiro nicho")}</Link>
+            </Button>
+          </div>
+        ) : null}
+
         <form onSubmit={buscar} className="flex flex-col gap-4">
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="flex flex-col gap-1.5">
@@ -92,7 +123,7 @@ export function ProspectingSearchForm() {
                 onChange={(e) => setBusinessType(e.target.value)}
                 placeholder={t("Ex.: clínica odontológica, pizzaria, barbearia…")}
                 required
-                disabled={enviando}
+                disabled={enviando || semNicho}
                 data-testid="prospeccao-tipo-negocio"
               />
             </div>
@@ -105,24 +136,23 @@ export function ProspectingSearchForm() {
                 onChange={(e) => setLocation(e.target.value)}
                 placeholder={t("Ex.: Curitiba, PR")}
                 required
-                disabled={enviando}
+                disabled={enviando || semNicho}
                 data-testid="prospeccao-localidade"
               />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="prospeccao-tipo-servico">{t("Tipo de serviço")}</Label>
-              {/* Único valor disponível em v1 — decorativo, sempre
-                  "venda_de_site" (mesmo valor que o schema do servidor
-                  aceita). Desabilitado de propósito: não é escolha real
-                  ainda, é onde a escolha vai morar quando houver mais de um
-                  serviço prospectável. */}
-              <Select value="venda_de_site" disabled>
-                <SelectTrigger id="prospeccao-tipo-servico">
-                  <SelectValue />
+              <Label htmlFor="prospeccao-nicho">{t("Nicho")}</Label>
+              <Select value={nicheId} onValueChange={setNicheId} disabled={enviando || semNicho}>
+                <SelectTrigger id="prospeccao-nicho" data-testid="prospeccao-nicho">
+                  <SelectValue placeholder={t("Escolha um nicho")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="venda_de_site">{t("Venda de site")}</SelectItem>
+                  {niches.map((niche) => (
+                    <SelectItem key={niche.id} value={niche.id}>
+                      {niche.name}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -141,7 +171,7 @@ export function ProspectingSearchForm() {
           <div>
             <Button
               type="submit"
-              disabled={enviando || !businessType.trim() || !location.trim()}
+              disabled={enviando || semNicho || !businessType.trim() || !location.trim() || !nicheId}
               className="gap-2"
               data-testid="prospeccao-buscar"
             >

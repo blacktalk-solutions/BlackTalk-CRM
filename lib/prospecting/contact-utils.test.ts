@@ -17,25 +17,25 @@ describe("contact-utils", () => {
       expect(normalizePhoneToE164("")).toBeNull();
     });
 
-    it("should prepend 55 to Brazilian 10-digit numbers", () => {
-      expect(normalizePhoneToE164("1133334444")).toBe("551133334444");
+    it("should prepend +55 to Brazilian 10-digit numbers", () => {
+      expect(normalizePhoneToE164("1133334444")).toBe("+551133334444");
     });
 
-    it("should prepend 55 to Brazilian 11-digit numbers", () => {
-      expect(normalizePhoneToE164("11999998888")).toBe("5511999998888");
+    it("should prepend +55 to Brazilian 11-digit numbers", () => {
+      expect(normalizePhoneToE164("11999998888")).toBe("+5511999998888");
     });
 
     it("should handle formatted Brazilian numbers", () => {
-      expect(normalizePhoneToE164("(11) 9 9999-8888")).toBe("5511999998888");
-      expect(normalizePhoneToE164("(11) 3333-4444")).toBe("551133334444");
+      expect(normalizePhoneToE164("(11) 9 9999-8888")).toBe("+5511999998888");
+      expect(normalizePhoneToE164("(11) 3333-4444")).toBe("+551133334444");
     });
 
     it("should accept numbers already starting with 55", () => {
-      expect(normalizePhoneToE164("551133334444")).toBe("551133334444");
+      expect(normalizePhoneToE164("551133334444")).toBe("+551133334444");
       // Passa direto (12 dígitos, já com 55) — não tenta adivinhar/inserir o
       // "9" de celular: "9999-8888" sem o 9 pode ser um fixo válido de 8
       // dígitos, não dá pra saber com certeza a partir só dos dígitos.
-      expect(normalizePhoneToE164("55 11 9999-8888")).toBe("551199998888");
+      expect(normalizePhoneToE164("55 11 9999-8888")).toBe("+551199998888");
     });
 
     it("should return null for numbers with wrong length", () => {

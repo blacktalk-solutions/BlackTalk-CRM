@@ -7,13 +7,17 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { fail } from "@/lib/api/wrappers";
 import { searchPlaces, PlacesApiError, type RawPlace } from "@/lib/prospecting/places-client";
-import { scoreInitial } from "@/lib/prospecting/score";
+import { scoreInitial, type NicheWeights } from "@/lib/prospecting/score";
 import type { AuthUser } from "@/lib/auth/types";
 
 /**
- * T4 — POST /api/v1/prospecting/searches (.specs/features/prospeccao-google-maps/).
+ * T4 — POST /api/v1/prospecting/searches (.specs/features/prospeccao-google-maps/),
+ * reescrita por T8 (`.specs/features/prospeccao-nichos-e-enriquecimento/`).
  *
- * Cobre: sucesso com mistura com/sem site (só com site emite evento),
+ * Cobre: sucesso com mistura com/sem site (score usa os pesos do NICHO
+ * escolhido, requisitos calculados, 3 eventos emitidos: site_quality só com
+ * site, cnpj_requested pra 100%, instagram_requested só sem site e peso>0),
+ * `nicheId` ausente → 400 `niche_required`, nicho de outra organização → 404,
  * `requireRole` bloqueando role insuficiente, erro de Places API sem insert
  * parcial, zero resultados não é erro, body inválido → 422, falha no insert
  * de `prospected_places` desfaz `prospected_searches` (compensação, já que o
@@ -38,6 +42,30 @@ vi.mock("@/lib/prospecting/places-client", async (importOriginal) => ({
 const ORG_ID = "22222222-2222-4222-8222-222222222222";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const SEARCH_ID = "33333333-3333-4333-8333-333333333333";
+const NICHE_ID = "55555555-5555-4555-8555-555555555555";
+
+/** Pesos de um nicho de teste — mesmos valores padrão do `prospeccao-kit-aluno` (site 25, instagram 15). */
+const PESOS_NICHO: NicheWeights = {
+  site: 25,
+  instagram: 15,
+  email: 15,
+  telefone: 10,
+  whatsapp: 10,
+  reputacao: 10,
+  cnpj: 5,
+  linkedin: 5,
+  endereco: 5,
+};
+
+function nicheRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: NICHE_ID,
+    service_type: "venda de site",
+    requirements: {},
+    weights: PESOS_NICHO,
+    ...overrides,
+  };
+}
 
 const PLACE_WITH_SITE: RawPlace = {
   placeId: "gp-1",
@@ -47,6 +75,9 @@ const PLACE_WITH_SITE: RawPlace = {
   websiteUrl: "https://padariasol.com.br",
   rating: 4.2,
   reviewCount: 30,
+  lat: -23.55,
+  lng: -46.63,
+  googleMapsUrl: "https://maps.google.com/?cid=1",
 };
 
 const PLACE_WITHOUT_SITE: RawPlace = {
@@ -57,6 +88,9 @@ const PLACE_WITHOUT_SITE: RawPlace = {
   websiteUrl: null,
   rating: 4.9,
   reviewCount: 50,
+  lat: -23.56,
+  lng: -46.64,
+  googleMapsUrl: "https://maps.google.com/?cid=2",
 };
 
 function mockAuthzOk(role: "manager" | "admin" = "manager") {
@@ -77,6 +111,7 @@ function mockAuthzOk(role: "manager" | "admin" = "manager") {
 }
 
 interface AdminCfg {
+  nicheResult?: { data?: Record<string, unknown> | null; error?: unknown };
   insertSearchResult?: { data?: { id: string } | null; error?: unknown };
   /** "echo" gera 1 linha por item inserido, com id sequencial `place-N`. */
   insertPlacesResult?: { data?: unknown[] | null; error?: unknown } | "echo";
@@ -94,6 +129,25 @@ function makeAdminStub(cfg: AdminCfg) {
   const calls: Calls = { rpcCalls: [] };
   const client = {
     from(table: string) {
+      if (table === "prospecting_niches") {
+        return {
+          select() {
+            return {
+              eq(_col1: string, _val1: string) {
+                return {
+                  eq(_col2: string, _val2: string) {
+                    return {
+                      maybeSingle() {
+                        return Promise.resolve(cfg.nicheResult ?? { data: nicheRow(), error: null });
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
       if (table === "prospected_searches") {
         return {
           insert(row: Record<string, unknown>) {
@@ -215,8 +269,13 @@ function makeListClientStub(cfg: ListClientCfg = {}) {
 const VALID_BODY = {
   businessType: "padaria",
   location: "São Paulo, SP",
-  serviceType: "venda_de_site",
+  nicheId: NICHE_ID,
 };
+
+/** Filtra os `rpcCalls` (todos passam por `emit_event`) por `p_event_type`. */
+function eventosDoTipo(calls: Calls, eventType: string) {
+  return calls.rpcCalls.filter((c) => c.params.p_event_type === eventType);
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -237,16 +296,29 @@ describe("POST /api/v1/prospecting/searches", () => {
     expect(createAdminClient).not.toHaveBeenCalled();
   });
 
-  it("body inválido (serviceType errado) → 422, nada chamado depois da validação", async () => {
+  it("sem nicheId → 400 niche_required, nunca chama a Places API nem o banco", async () => {
     mockAuthzOk();
     const { POST } = await import("./route");
 
-    const res = await POST(postReq({ ...VALID_BODY, serviceType: "outra_coisa" }));
+    const res = await POST(postReq({ businessType: "padaria", location: "São Paulo, SP" }));
 
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("niche_required");
     expect(searchPlaces).not.toHaveBeenCalled();
     expect(createAdminClient).not.toHaveBeenCalled();
-    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("nicheId de outra organização (ou inexistente) → 404, nunca chama a Places API", async () => {
+    mockAuthzOk();
+    const { client } = makeAdminStub({ nicheResult: { data: null, error: null } });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+
+    const { POST } = await import("./route");
+    const res = await POST(postReq(VALID_BODY));
+
+    expect(res.status).toBe(404);
+    expect(searchPlaces).not.toHaveBeenCalled();
   });
 
   it("businessType vazio → 422", async () => {
@@ -283,7 +355,7 @@ describe("POST /api/v1/prospecting/searches", () => {
     );
   });
 
-  it("mistura com/sem site: persiste as duas, mas só emite event_log para a linha com site", async () => {
+  it("mistura com/sem site: score usa os pesos do nicho, 3 tipos de evento emitidos corretamente", async () => {
     mockAuthzOk();
     vi.mocked(searchPlaces).mockResolvedValue({
       places: [PLACE_WITH_SITE, PLACE_WITHOUT_SITE],
@@ -305,6 +377,7 @@ describe("POST /api/v1/prospecting/searches", () => {
           scoreInitial: number;
           statusLabel: string;
           siteAnalysisStatus: string;
+          requisitosOk: boolean;
         }>;
       };
     };
@@ -315,36 +388,41 @@ describe("POST /api/v1/prospecting/searches", () => {
     const comSite = body.data.places.find((p) => p.websiteUrl !== null)!;
     const semSite = body.data.places.find((p) => p.websiteUrl === null)!;
 
-    const esperadoComSite = scoreInitial({ hasWebsite: true, rating: 4.2, reviewCount: 30 });
-    const esperadoSemSite = scoreInitial({ hasWebsite: false, rating: 4.9, reviewCount: 50 });
+    // Score usa os pesos do NICHO da busca (PESOS_NICHO), não mais uma constante fixa.
+    const esperadoComSite = scoreInitial({ hasWebsite: true, rating: 4.2, reviewCount: 30 }, PESOS_NICHO);
+    const esperadoSemSite = scoreInitial({ hasWebsite: false, rating: 4.9, reviewCount: 50 }, PESOS_NICHO);
     expect(comSite.scoreInitial).toBe(esperadoComSite.score);
     expect(comSite.statusLabel).toBe(esperadoComSite.label);
     expect(comSite.siteAnalysisStatus).toBe("pending");
+    expect(comSite.requisitosOk).toBe(true); // sem requirements no nicho de teste, nada reprova
     expect(semSite.scoreInitial).toBe(esperadoSemSite.score);
     expect(semSite.statusLabel).toBe(esperadoSemSite.label);
     expect(semSite.siteAnalysisStatus).toBe("not_applicable");
 
-    // Linha sem site NÃO gera evento; linha com site gera exatamente 1.
-    expect(calls.rpcCalls).toHaveLength(1);
-    expect(calls.rpcCalls[0]).toEqual({
-      name: "emit_event",
-      params: expect.objectContaining({
-        p_event_type: "prospected_place.site_quality_requested",
-        p_entity_kind: "prospected_place",
-        p_entity_id: comSite.id,
-        p_organization_id: ORG_ID,
-        p_payload: expect.objectContaining({ prospected_place_id: comSite.id, search_id: SEARCH_ID }),
-      }),
-    });
+    // site_quality_requested: só quem TEM site (P2 original, inalterado).
+    const siteEvents = eventosDoTipo(calls, "prospected_place.site_quality_requested");
+    expect(siteEvents).toHaveLength(1);
+    expect(siteEvents[0]?.params.p_entity_id).toBe(comSite.id);
 
-    // organization_id/requested_by vêm de requireRole, nunca do body.
+    // cnpj_requested: TODO resultado (T8/T9) — 100%, independe de site/peso.
+    const cnpjEvents = eventosDoTipo(calls, "prospected_place.cnpj_requested");
+    expect(cnpjEvents).toHaveLength(2);
+    expect(cnpjEvents.map((e) => e.params.p_entity_id).sort()).toEqual([comSite.id, semSite.id].sort());
+
+    // instagram_requested: só quem NÃO tem site (weights.instagram=15>0 no nicho de teste).
+    const instaEvents = eventosDoTipo(calls, "prospected_place.instagram_requested");
+    expect(instaEvents).toHaveLength(1);
+    expect(instaEvents[0]?.params.p_entity_id).toBe(semSite.id);
+
+    // organization_id/requested_by vêm de requireRole, nunca do body; service_type é CÓPIA do nicho.
     expect(calls.insertedSearch).toEqual(
       expect.objectContaining({
         organization_id: ORG_ID,
         requested_by: USER_ID,
         business_type: "padaria",
         location: "São Paulo, SP",
-        service_type: "venda_de_site",
+        service_type: "venda de site",
+        niche_id: NICHE_ID,
         result_count: 2,
         places_api_capped: false,
       }),
@@ -353,9 +431,67 @@ describe("POST /api/v1/prospecting/searches", () => {
     expect(vi.mocked(audit)).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "prospecting.search_run",
-        metadata: expect.objectContaining({ result_count: 2, with_website_count: 1 }),
+        metadata: expect.objectContaining({ result_count: 2, with_website_count: 1, niche_id: NICHE_ID }),
       }),
     );
+  });
+
+  it("resultado fora dos requisitos do nicho → requisitos_ok=false com motivo preenchido", async () => {
+    mockAuthzOk();
+    vi.mocked(searchPlaces).mockResolvedValue({ places: [PLACE_WITHOUT_SITE], placesApiCapped: false });
+    // PLACE_WITHOUT_SITE tem reviewCount: 50 — exige mínimo de 1000 pra reprovar de propósito.
+    const { client } = makeAdminStub({
+      nicheResult: { data: nicheRow({ requirements: { avaliacoesMin: 1000 } }), error: null },
+      insertPlacesResult: "echo",
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+
+    const { POST } = await import("./route");
+    const res = await POST(postReq(VALID_BODY));
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { data: { places: Array<{ requisitosOk: boolean; motivoRequisitos: string | null }> } };
+    expect(body.data.places[0]?.requisitosOk).toBe(false);
+    expect(body.data.places[0]?.motivoRequisitos).toContain("avaliações");
+  });
+
+  it("2 nichos diferentes pro MESMO resultado dão notas diferentes (prova que o peso é usado)", async () => {
+    mockAuthzOk();
+    vi.mocked(searchPlaces).mockResolvedValue({ places: [PLACE_WITH_SITE], placesApiCapped: false });
+
+    const nichoA = nicheRow({ weights: { ...PESOS_NICHO, site: 100, instagram: 0, whatsapp: 0, email: 0, telefone: 0, reputacao: 0, cnpj: 0, endereco: 0, linkedin: 0 } });
+    const { client: clientA } = makeAdminStub({ nicheResult: { data: nichoA, error: null }, insertPlacesResult: "echo" });
+    vi.mocked(createAdminClient).mockReturnValue(clientA as never);
+    const { POST } = await import("./route");
+    const resA = await POST(postReq(VALID_BODY));
+    const bodyA = (await resA.json()) as { data: { places: Array<{ scoreInitial: number }> } };
+
+    vi.mocked(createAdminClient).mockClear();
+    const nichoB = nicheRow({ weights: { ...PESOS_NICHO, site: 10, instagram: 0, whatsapp: 0, email: 0, telefone: 0, reputacao: 0, cnpj: 0, endereco: 0, linkedin: 0 } });
+    const { client: clientB } = makeAdminStub({ nicheResult: { data: nichoB, error: null }, insertPlacesResult: "echo" });
+    vi.mocked(createAdminClient).mockReturnValue(clientB as never);
+    const resB = await POST(postReq(VALID_BODY));
+    const bodyB = (await resB.json()) as { data: { places: Array<{ scoreInitial: number }> } };
+
+    expect(bodyA.data.places[0]?.scoreInitial).not.toBe(bodyB.data.places[0]?.scoreInitial);
+  });
+
+  it("nicho com weights.instagram=0 → nenhum instagram_requested, mesmo sem site", async () => {
+    mockAuthzOk();
+    vi.mocked(searchPlaces).mockResolvedValue({ places: [PLACE_WITHOUT_SITE], placesApiCapped: false });
+    const { client, calls } = makeAdminStub({
+      nicheResult: { data: nicheRow({ weights: { ...PESOS_NICHO, instagram: 0 } }), error: null },
+      insertPlacesResult: "echo",
+    });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
+
+    const { POST } = await import("./route");
+    const res = await POST(postReq(VALID_BODY));
+
+    expect(res.status).toBe(201);
+    expect(eventosDoTipo(calls, "prospected_place.instagram_requested")).toHaveLength(0);
+    // cnpj continua saindo pra 100%, independente do peso de Instagram.
+    expect(eventosDoTipo(calls, "prospected_place.cnpj_requested")).toHaveLength(1);
   });
 
   it.each([
@@ -368,7 +504,7 @@ describe("POST /api/v1/prospecting/searches", () => {
     async (code, expectedStatus) => {
       mockAuthzOk();
       vi.mocked(searchPlaces).mockRejectedValue(new PlacesApiError(code, `falhou: ${code}`));
-      const { client } = makeAdminStub({});
+      const { client, calls } = makeAdminStub({});
       vi.mocked(createAdminClient).mockReturnValue(client as never);
 
       const { POST } = await import("./route");
@@ -377,9 +513,10 @@ describe("POST /api/v1/prospecting/searches", () => {
       expect(res.status).toBe(expectedStatus);
       const body = (await res.json()) as { error: { code: string } };
       expect(body.error.code).toBe(code);
-      // createAdminClient só é chamado DEPOIS da Places API responder — erro
-      // aqui nunca chega a criar o client, então nunca chega a inserir nada.
-      expect(createAdminClient).not.toHaveBeenCalled();
+      // O nicho já foi carregado (createAdminClient É chamado antes da Places
+      // API, T8) — o que prova "nada parcial" é que NENHUM insert aconteceu.
+      expect(calls.insertedSearch).toBeUndefined();
+      expect(calls.insertedPlaces).toBeUndefined();
       expect(audit).not.toHaveBeenCalled();
     },
   );

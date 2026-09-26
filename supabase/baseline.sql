@@ -23427,6 +23427,110 @@ do $$ begin
  end if;
 end $$;
 
+-- ---- nichos de prospecção configuráveis: prospecting_niches (migration 0236) ----
+-- Fundação (T1) de .specs/features/prospeccao-nichos-e-enriquecimento/ — ver o
+-- cabeçalho da migration 0236 para o raciocínio completo (por que tabela nova
+-- em vez de campo único na organização, por que weights/requirements em jsonb,
+-- por que niche_id sem cascade, por que requisitos_ok default true).
+
+create table if not exists public.prospecting_niches (
+  id                uuid primary key default gen_random_uuid(),
+  organization_id   uuid not null references public.organizations(id) on delete cascade,
+  name              text not null,
+  service_type      text not null,
+  search_terms      text[] not null,
+  requirements      jsonb not null default '{}'::jsonb,
+  weights           jsonb not null default '{}'::jsonb,
+  created_by        uuid not null references auth.users(id),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+create index if not exists idx_prospecting_niches_org
+  on public.prospecting_niches (organization_id, created_at desc);
+
+alter table public.prospecting_niches enable row level security;
+
+drop policy if exists tenant_isolation_prospecting_niches_all on public.prospecting_niches;
+create policy tenant_isolation_prospecting_niches_all on public.prospecting_niches
+  for all
+  using (organization_id in (select public.fn_user_org_ids()))
+  with check (organization_id in (select public.fn_user_org_ids()));
+
+revoke all on public.prospecting_niches from anon;
+
+drop trigger if exists trg_prospecting_niches_updated_at on public.prospecting_niches;
+create trigger trg_prospecting_niches_updated_at
+  before update on public.prospecting_niches
+  for each row execute function public.fn_set_updated_at();
+
+comment on table public.prospecting_niches is
+  'Critério configurável de prospecção por organização (termos, requisitos, pesos) — substitui o service_type fixo de 0234. 1:N com organizations.';
+
+alter table public.prospected_searches
+  add column if not exists niche_id uuid references public.prospecting_niches(id);
+
+comment on column public.prospected_searches.niche_id is
+  'Nicho escolhido para esta busca (0236). service_type continua sendo uma CÓPIA do service_type do nicho no momento da busca — não um join ao vivo.';
+
+alter table public.prospected_places
+  add column if not exists requisitos_ok      boolean not null default true,
+  add column if not exists motivo_requisitos  text;
+
+comment on column public.prospected_places.requisitos_ok is
+  'Passou nos requisitos do nicho da busca — default true trata linhas anteriores a esta migration como não reprovadas. Distinto de status_label.';
+
+-- ---- enriquecimento de prospecção: colunas de CNPJ e Instagram (migration 0237) ----
+-- T2 de .specs/features/prospeccao-nichos-e-enriquecimento/ — mesmo formato de
+-- site_analysis_status/site_analysis_result (0234), um trio (data/status/
+-- consultado_em) por trilho assíncrono novo. Ver o cabeçalho da migration
+-- 0237 para o raciocínio completo.
+
+alter table public.prospected_places
+  add column if not exists cnpj_data             jsonb,
+  add column if not exists cnpj_status            text not null default 'not_applicable',
+  add column if not exists cnpj_consultado_em     timestamptz,
+  add column if not exists instagram_data         jsonb,
+  add column if not exists instagram_status       text not null default 'not_applicable',
+  add column if not exists instagram_consultado_em timestamptz;
+
+alter table public.prospected_places
+  drop constraint if exists prospected_places_cnpj_status_check,
+  add constraint prospected_places_cnpj_status_check
+    check (cnpj_status in ('not_applicable', 'pending', 'processing', 'done', 'failed'));
+
+alter table public.prospected_places
+  drop constraint if exists prospected_places_instagram_status_check,
+  add constraint prospected_places_instagram_status_check
+    check (instagram_status in ('not_applicable', 'pending', 'processing', 'done', 'failed'));
+
+comment on column public.prospected_places.cnpj_status is
+  'not_applicable = ainda não pedido; pending/processing/done/failed = ciclo de vida de prospecting-cnpj-worker (T9). Mesmos 5 valores de site_analysis_status.';
+comment on column public.prospected_places.instagram_status is
+  'not_applicable = nicho sem peso de Instagram, ou APIFY_TOKEN ausente; pending/processing/done/failed = ciclo de vida de prospecting-instagram-worker (T10).';
+
+-- ---- ficha de prospecção avançada: coordenadas do Maps + pitch de venda por IA (migration 0238) ----
+-- Ver o cabeçalho da migration 0238 para o raciocínio completo (por que
+-- lat/lng/google_maps_url não custam SKU extra, por que oportunidade_pitch_*
+-- é gatilho MANUAL em vez de promovido em massa pela busca).
+
+alter table public.prospected_places
+  add column if not exists lat                          numeric,
+  add column if not exists lng                           numeric,
+  add column if not exists google_maps_url               text,
+  add column if not exists oportunidade_pitch_status     text not null default 'not_applicable',
+  add column if not exists justificativa_oportunidade    text,
+  add column if not exists abordagem_instagram           text,
+  add column if not exists oportunidade_pitch_gerado_em  timestamptz;
+
+alter table public.prospected_places
+  drop constraint if exists prospected_places_oportunidade_pitch_status_check,
+  add constraint prospected_places_oportunidade_pitch_status_check
+    check (oportunidade_pitch_status in ('not_applicable', 'pending', 'processing', 'done', 'failed'));
+
+comment on column public.prospected_places.oportunidade_pitch_status is
+  'not_applicable = ninguém pediu ainda (gatilho MANUAL, ver app/api/v1/prospecting/places/[placeId]/pitch/route.ts); pending/processing/done/failed = ciclo de vida do worker de pitch. Mesmos 5 valores de site_analysis_status.';
+
 -- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
 --
 -- ⚠️ ESTE BLOCO É, DE PROPÓSITO, O ÚLTIMO DO ARQUIVO. Apêndice novo entra ANTES

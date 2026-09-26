@@ -33,6 +33,8 @@ describe("applyPlaceUpdate", () => {
     email: null,
     promotedLeadId: null,
     promotedAt: null,
+    requisitosOk: true,
+    motivoRequisitos: null,
     ...overrides,
   });
 

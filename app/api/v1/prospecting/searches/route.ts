@@ -1,18 +1,21 @@
 import { requireSupportWrite } from "@/lib/impersonate/support";
 /**
- * POST /api/v1/prospecting/searches — T4 do plano
- * `.specs/features/prospeccao-google-maps/` (design.md "Dois relógios").
+ * POST /api/v1/prospecting/searches — T4 de `.specs/features/prospeccao-google-maps/`,
+ * reescrita por T8 de `.specs/features/prospeccao-nichos-e-enriquecimento/`
+ * (design.md "API": "`POST /api/v1/prospecting/searches` (alterado)").
  *
- * Orquestra P1 (síncrono, dentro da própria request): valida o body → busca
- * na Google Places API (New) → calcula `scoreInitial` por linha → persiste a
- * busca + os resultados em lote → emite 1 evento
- * `prospected_place.site_quality_requested` por linha COM site (P2, o
- * worker de Playwright que consome esse evento, ainda não existe neste
- * plano — só a emissão é escopo desta task) → `audit()` → responde.
+ * Orquestra P1 (síncrono, dentro da própria request): valida o body → carrega
+ * o NICHO escolhido (pesos/requisitos, T7) → busca na Google Places API
+ * (New) → calcula `scoreInitial`/`checkRequirements` por linha usando os
+ * pesos/requisitos DAQUELE nicho → persiste a busca + os resultados em lote
+ * → emite `site_quality_requested` (só quem tem site), `cnpj_requested`
+ * (TODO resultado) e `instagram_requested` (só quem NÃO tem site e
+ * `weights.instagram > 0` — quem TEM site ganha esse evento depois, do
+ * `site-quality-worker`, T11, ainda não construído) → `audit()` → responde.
  *
- * Nunca espera o Playwright: erro de Places API não persiste nada (busca
- * inteira falha alto); zero resultados NÃO é erro (busca com 0
- * `prospected_places` é um resultado válido).
+ * Nunca espera os workers: erro de Places API ou nicho não encontrado não
+ * persiste nada (busca inteira falha alto); zero resultados NÃO é erro
+ * (busca com 0 `prospected_places` é um resultado válido).
  */
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
@@ -22,18 +25,32 @@ import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { traduzir } from "@/lib/i18n/dicionario";
+import { normalizePhoneToE164 } from "@/lib/prospecting/contact-utils";
 import {
   PlacesApiError,
   searchPlaces,
   type PlacesApiErrorCode,
   type RawPlace,
 } from "@/lib/prospecting/places-client";
-import { scoreInitial } from "@/lib/prospecting/score";
+import {
+  checkRequirements,
+  scoreInitial,
+  type NicheRequirements,
+  type NicheWeights,
+} from "@/lib/prospecting/score";
 import { prospectingSearchSchema, validateRequest } from "@/lib/schemas";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
+
+/** Forma de uma linha de `prospecting_niches` como esta rota lê (só o que usa). */
+interface NicheForSearch {
+  id: string;
+  service_type: string;
+  requirements: NicheRequirements | null;
+  weights: NicheWeights;
+}
 
 /**
  * Status HTTP por `PlacesApiError.code` — não há tabela fixa disso no brief
@@ -89,6 +106,13 @@ export interface ProspectedPlaceRow {
   email: string | null;
   promoted_lead_id: string | null;
   promoted_at: string | null;
+  /** T8: passou nos requisitos do nicho da busca — default `true` para linhas de antes da 0236. */
+  requisitos_ok: boolean;
+  motivo_requisitos: string | null;
+  /** 0238: coordenadas + link direto da Google — null em linhas de antes da migration. */
+  lat: number | null;
+  lng: number | null;
+  google_maps_url: string | null;
 }
 
 /**
@@ -114,6 +138,11 @@ export interface ProspectedPlaceDTO {
   email: string | null;
   promotedLeadId: string | null;
   promotedAt: string | null;
+  requisitosOk: boolean;
+  motivoRequisitos: string | null;
+  lat: number | null;
+  lng: number | null;
+  googleMapsUrl: string | null;
 }
 
 export function toPlaceDTO(row: ProspectedPlaceRow): ProspectedPlaceDTO {
@@ -136,13 +165,19 @@ export function toPlaceDTO(row: ProspectedPlaceRow): ProspectedPlaceDTO {
     email: row.email,
     promotedLeadId: row.promoted_lead_id,
     promotedAt: row.promoted_at,
+    requisitosOk: row.requisitos_ok,
+    motivoRequisitos: row.motivo_requisitos,
+    lat: row.lat,
+    lng: row.lng,
+    googleMapsUrl: row.google_maps_url,
   };
 }
 
 export const PLACES_SELECT_COLUNAS =
   "id, search_id, place_id, name, address, phone_number, phone_number_normalized, " +
   "website_url, rating, review_count, score_initial, score_final, status_label, " +
-  "site_analysis_status, site_analysis_result, email, promoted_lead_id, promoted_at";
+  "site_analysis_status, site_analysis_result, email, promoted_lead_id, promoted_at, " +
+  "requisitos_ok, motivo_requisitos, lat, lng, google_maps_url";
 
 /**
  * Forma de uma linha de `prospected_searches` como a listagem (GET deste
@@ -199,7 +234,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const { user, org } = authz;
 
-  let input: { businessType: string; location: string; serviceType: "venda_de_site" };
+  let input: { businessType: string; location: string; nicheId?: string };
   try {
     input = await validateRequest(prospectingSearchSchema, req);
   } catch (err) {
@@ -211,6 +246,39 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
     throw err;
   }
+
+  // `nicheId` ausente tem código PRÓPRIO (T8, "Done when") — não é um 422
+  // genérico de forma, é "a tela deveria ter orientado a escolher/criar um
+  // nicho antes" (P1, spec.md, critério 6).
+  if (!input.nicheId) {
+    return fail("niche_required", t("Escolha um nicho de prospecção antes de buscar."), 400, {
+      requestId,
+    });
+  }
+
+  const admin = createAdminClient();
+
+  // Carrega o nicho ANTES de gastar a chamada paga à Places API — um nicho
+  // inexistente/de outra organização não deveria custar cota da Google.
+  // `.eq("organization_id", ...)` além do filtro por id: RLS já restringe,
+  // isto é defesa em profundidade e o que faz "nicho de outra organização"
+  // devolver 404 (não vaza "existe, mas não é seu" via 403).
+  const { data: nicheRow, error: nicheErr } = await admin
+    .from("prospecting_niches")
+    .select("id, service_type, requirements, weights")
+    .eq("id", input.nicheId)
+    .eq("organization_id", org.orgId)
+    .maybeSingle();
+
+  if (nicheErr) {
+    return fail("internal_error", nicheErr.message, 500, { requestId });
+  }
+  if (!nicheRow) {
+    return fail("not_found", t("Nicho não encontrado."), 404, { requestId });
+  }
+  const niche = nicheRow as unknown as NicheForSearch;
+  const weights = niche.weights;
+  const requirements = niche.requirements ?? {};
 
   let places: RawPlace[];
   let placesApiCapped: boolean;
@@ -229,15 +297,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     throw err;
   }
 
-  const admin = createAdminClient();
-
   const { data: search, error: searchErr } = await admin
     .from("prospected_searches")
     .insert({
       organization_id: org.orgId,
       business_type: input.businessType,
       location: input.location,
-      service_type: input.serviceType,
+      // CÓPIA do service_type do nicho NO MOMENTO da busca, não um join ao
+      // vivo (design.md, "Data Models") — editar o nicho depois (T7 PATCH)
+      // nunca muda o texto gravado aqui.
+      service_type: niche.service_type,
+      niche_id: niche.id,
       requested_by: user.id,
       result_count: places.length,
       places_api_capped: placesApiCapped,
@@ -257,11 +327,27 @@ export async function POST(req: NextRequest): Promise<Response> {
   let placeRows: ProspectedPlaceRow[] = [];
   if (places.length > 0) {
     const rowsToInsert = places.map((place) => {
-      const { score, label } = scoreInitial({
-        hasWebsite: !!place.websiteUrl,
-        rating: place.rating ?? undefined,
-        reviewCount: place.reviewCount ?? undefined,
-      });
+      const phoneE164 = normalizePhoneToE164(place.phoneNumber);
+      const { score, label } = scoreInitial(
+        {
+          hasWebsite: !!place.websiteUrl,
+          rating: place.rating ?? undefined,
+          reviewCount: place.reviewCount ?? undefined,
+        },
+        weights,
+      );
+      // O que ELIMINA (T8/T3) — separado da nota acima, mesma distinção do
+      // `prospeccao-kit-aluno`. Roda AQUI (na busca), contra os dados que
+      // existem NESTE momento: `exigeSite` só sabe "tem site cadastrado no
+      // Maps ou não" — o `site-quality-worker` (T11) ainda não rodou.
+      const { ok: requisitosOk, motivo: motivoRequisitos } = checkRequirements(
+        {
+          hasWebsite: !!place.websiteUrl,
+          reviewCount: place.reviewCount ?? undefined,
+          phoneE164,
+        },
+        requirements,
+      );
       return {
         search_id: searchId,
         organization_id: org.orgId,
@@ -269,9 +355,12 @@ export async function POST(req: NextRequest): Promise<Response> {
         name: place.name,
         address: place.address,
         phone_number: place.phoneNumber,
-        // Normalização E.164 (pro link wa.me) fica fora do escopo desta
-        // task — o brief não pede o cálculo, e a coluna aceita null.
-        phone_number_normalized: null,
+        // Achado ao ligar `checkRequirements` (T8): esta rota já calcula o
+        // E.164 do telefone pra checar `exigeCelular` — gravar aqui fecha um
+        // gap real da task original (T4), que deixava a coluna sempre null e
+        // o link wa.me (`lib/prospecting/contact-utils.ts`) sem dado nenhum
+        // pra funcionar. Nenhuma chamada de rede a mais: mesmo valor.
+        phone_number_normalized: phoneE164,
         website_url: place.websiteUrl,
         rating: place.rating,
         review_count: place.reviewCount,
@@ -280,6 +369,11 @@ export async function POST(req: NextRequest): Promise<Response> {
         status_label: label,
         site_analysis_status: place.websiteUrl ? "pending" : "not_applicable",
         email: null,
+        requisitos_ok: requisitosOk,
+        motivo_requisitos: motivoRequisitos ?? null,
+        lat: place.lat,
+        lng: place.lng,
+        google_maps_url: place.googleMapsUrl,
       };
     });
 
@@ -303,26 +397,25 @@ export async function POST(req: NextRequest): Promise<Response> {
     placeRows = insertedPlaces as unknown as ProspectedPlaceRow[];
   }
 
-  // 1 evento por linha COM site — nunca para linha sem site (não há o que
-  // analisar). `event_log` real (migration 0234) não tem coluna
-  // `external_id`/constraint de idempotência por ela — design.md e o brief
-  // desta task assumiam que existia; não existe, e não é papel desta task
-  // inventar a coluna. Reportado como achado, não resolvido aqui.
-  const comSite = placeRows.filter((row) => row.website_url !== null);
-  if (comSite.length > 0) {
+  // `event_log` real (migration 0234) não tem coluna `external_id`/
+  // constraint de idempotência por ela — design.md e o brief da task original
+  // (T4) assumiam que existia; não existe, e não é papel desta task inventar
+  // a coluna. Reportado como achado, não resolvido aqui (idempotência dos
+  // workers novos vive na APLICAÇÃO — claim otimista por status, T9/T10).
+  async function emitirEventos(
+    rows: ProspectedPlaceRow[],
+    eventType: string,
+    payload: (row: ProspectedPlaceRow) => Record<string, unknown>,
+  ): Promise<void> {
+    if (rows.length === 0) return;
     const emissoes = await Promise.all(
-      comSite.map((row) =>
+      rows.map((row) =>
         admin
           .rpc("emit_event", {
-            p_event_type: "prospected_place.site_quality_requested",
+            p_event_type: eventType,
             p_entity_kind: "prospected_place",
             p_entity_id: row.id,
-            p_payload: {
-              prospected_place_id: row.id,
-              search_id: searchId,
-              place_id: row.place_id,
-              website_url: row.website_url,
-            },
+            p_payload: payload(row),
             p_metadata: { request_id: requestId, actor_user_id: user.id },
             p_organization_id: org.orgId,
           })
@@ -332,11 +425,50 @@ export async function POST(req: NextRequest): Promise<Response> {
     for (const emissao of emissoes) {
       if (emissao.error) {
         console.error("[prospecting.search] emit_event falhou", {
+          eventType,
           prospectedPlaceId: emissao.id,
           error: emissao.error.message,
         });
       }
     }
+  }
+
+  // 1 evento por linha COM site — nunca para linha sem site (não há o que
+  // analisar). P2 original, inalterado por T8.
+  const comSite = placeRows.filter((row) => row.website_url !== null);
+  await emitirEventos(comSite, "prospected_place.site_quality_requested", (row) => ({
+    prospected_place_id: row.id,
+    search_id: searchId,
+    place_id: row.place_id,
+    website_url: row.website_url,
+  }));
+
+  // T8/T9: CNPJ é grátis (Receita pública + pesquisa quando precisa) e não
+  // depende de site (busca é por nome+cidade) — emitido pra TODO resultado,
+  // sem checar peso (design.md, Tech Decisions: "pular consulta com peso 0"
+  // só vale pro Instagram, que é pago via Apify).
+  await emitirEventos(placeRows, "prospected_place.cnpj_requested", (row) => ({
+    prospected_place_id: row.id,
+    search_id: searchId,
+    place_id: row.place_id,
+    name: row.name,
+    address: row.address,
+  }));
+
+  // T8/T10: só quem NÃO tem site (nada a esperar) e só se o nicho dá peso a
+  // Instagram (design.md, "Gatilho do Instagram"). Quem TEM site ganha este
+  // evento depois, do `site-quality-worker` (T11, ainda não construído) —
+  // que tenta achar o link no HTML já baixado antes de cair pra pesquisa.
+  if (weights.instagram > 0) {
+    const semSite = placeRows.filter((row) => row.website_url === null);
+    await emitirEventos(semSite, "prospected_place.instagram_requested", (row) => ({
+      prospected_place_id: row.id,
+      search_id: searchId,
+      place_id: row.place_id,
+      name: row.name,
+      address: row.address,
+      instagram_link: null, // sem site, ninguém já achou um link — o worker (T10) pesquisa
+    }));
   }
 
   void audit({
@@ -349,7 +481,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     metadata: {
       business_type: input.businessType,
       location: input.location,
-      service_type: input.serviceType,
+      niche_id: niche.id,
+      service_type: niche.service_type,
       result_count: placeRows.length,
       places_api_capped: placesApiCapped,
       with_website_count: comSite.length,

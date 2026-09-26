@@ -26,12 +26,27 @@
  *   NÃO é tocado aqui (fica null se já era null; a UI usa
  *   `scoreFinal ?? scoreInitial`). Ver `lib/prospecting/score.ts` e o teste
  *   deste arquivo para os dois cenários lado a lado.
+ *
+ * T11 (`.specs/features/prospeccao-nichos-e-enriquecimento/`) estendeu este
+ * worker com DUAS coisas, sem tirar nada do que já existia acima:
+ * 1. `scoreFinal` passa a usar os PESOS DE VERDADE do nicho da busca
+ *    (`prospected_places.search_id` → `prospected_searches.niche_id` →
+ *    `prospecting_niches.weights`), removendo o `LEGACY_FULL_WEIGHT_SHIM`
+ *    que existia desde T3.
+ * 2. Regex de link de Instagram no MESMO HTML já baixado pro `mailto:`
+ *    (nenhum fetch a mais). Ao terminar com sucesso, emite
+ *    `prospected_place.instagram_requested` sempre que `weights.instagram >
+ *    0` — achou link ou não, quem decide o que fazer com isso é o
+ *    `instagram-worker` (T10). `weights.instagram === 0` não emite nada:
+ *    ninguém vai gastar Apify num sinal que não pontua pra este nicho
+ *    (design.md, CONCERNS: "duplicar o fetch só pra manter separação 'pura'
+ *    custaria uma chamada HTTP extra por resultado sem ganho real").
  */
 import { chromium, type Browser } from "playwright";
 
 import type { EventRow, HandlerResult } from "@/lib/event-log/dispatcher";
 import { logger } from "@/lib/logger";
-import { scoreFinal } from "@/lib/prospecting/score";
+import { scoreFinal, type NicheWeights } from "@/lib/prospecting/score";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const PROSPECTING_SITE_QUALITY_CONSUMER_KEY = "prospecting_site_quality_v1";
@@ -45,6 +60,8 @@ const HTTP_ERROR_STATUS_THRESHOLD = 400;
 interface ProspectedPlaceRow {
   id: string;
   organization_id: string;
+  search_id: string;
+  place_id: string;
   website_url: string | null;
   rating: number | null;
   review_count: number | null;
@@ -67,12 +84,42 @@ interface PlaywrightAnalysisResult {
   loadTimeMs: number;
   /** Primeiro e-mail encontrado (mailto: ou regex no texto visível). */
   email?: string;
+  /** T11: primeiro link de perfil do Instagram encontrado no HTML, se houver. */
+  instagramLink?: string;
+  /**
+   * "Raio-x do site" — 4 testes novos sobre o MESMO HTML já baixado acima
+   * (nenhuma requisição de rede extra): botão/link de WhatsApp, pixel da
+   * Meta, tag do Google Ads, Google Analytics. Puramente argumento de venda
+   * — nunca entram em `scoreFinal` (mesma separação da referência que
+   * inspirou esta ficha: "marketing"/raio-x lá também não pontua).
+   */
+  hasWhatsappButton: boolean;
+  hasMetaPixel: boolean;
+  hasGoogleAdsPixel: boolean;
+  hasGoogleAnalytics: boolean;
+  /** Ano do `©`/"copyright" do rodapé, se achado — texto visível, não o HTML bruto (mesmo motivo de `extractEmailFromText`). */
+  copyrightYear: number | null;
+  /** `true` quando `copyrightYear` é anterior ao ano corrente menos 1 — ver `ehRodapeDesatualizado`. */
+  desatualizado: boolean;
 }
 
 /** `<a href="mailto:...">` — primeira ocorrência, sem juntar todos. */
 const MAILTO_RE = /href=["']mailto:([^"'?\s]+)/i;
 /** Padrão de e-mail simples — primeira ocorrência no texto visível da página. */
 const EMAIL_TEXT_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+/**
+ * `href="https://instagram.com/clinica.ospe"` — mesmo padrão simples do
+ * `MAILTO_RE` acima (T11). Não filtra `/p/`, `/reel/` etc. aqui: um link de
+ * post no rodapé do site já é sinal fraco o suficiente pra ser raro; se
+ * acontecer, `usuarioDoLink` (`lib/prospecting/apify-client.ts`, chamado
+ * pelo instagram-worker que CONSOME este link) descarta na hora de extrair o
+ * usuário — não duplica aquele filtro aqui.
+ */
+const INSTAGRAM_LINK_RE = /href=["'](https?:\/\/(?:www\.)?instagram\.com\/[A-Za-z0-9_.\/?=&-]+)["']/i;
+
+function extractInstagramLink(html: string): string | undefined {
+  return html.match(INSTAGRAM_LINK_RE)?.[1];
+}
 
 /**
  * Extrai o primeiro e-mail de contato encontrado.
@@ -106,6 +153,47 @@ function hasViewportMeta(html: string): boolean {
   return /<meta[^>]+name=["']viewport["'][^>]*>/i.test(html);
 }
 
+/** `wa.me/`, `api.whatsapp.com/send`, `whatsapp://send` — qualquer forma comum de link/botão de WhatsApp. */
+const WHATSAPP_BUTTON_RE = /(?:wa\.me\/|api\.whatsapp\.com\/send|whatsapp:\/\/send)/i;
+/** Snippet do Pixel da Meta: script `fbevents.js` OU chamada `fbq('init', ...)`. */
+const META_PIXEL_RE = /connect\.facebook\.net\/[^"'\s]*\/fbevents\.js|fbq\(\s*['"]init['"]/i;
+/** Tag de conversão do Google Ads: script `googleadservices.com` OU `gtag('config', 'AW-...')`. */
+const GOOGLE_ADS_PIXEL_RE = /googleadservices\.com\/pagead|gtag\(\s*['"]config['"]\s*,\s*['"]AW-|AW-\d{9,}/i;
+/** Google Analytics (GA4 `gtag`/GTM ou o `analytics.js` legado). */
+const GOOGLE_ANALYTICS_RE =
+  /google-analytics\.com\/(?:analytics|ga)\.js|googletagmanager\.com\/(?:gtag\/js|gtm\.js)|gtag\(\s*['"]config['"]\s*,\s*['"]G-/i;
+/** `© 2024` / `Copyright 2024` / `© 2024 Empresa` — primeiro ano de 4 dígitos perto do sinal de copyright. */
+const COPYRIGHT_YEAR_RE = /(?:©|\bcopyright\b)[^\d]{0,20}(\d{4})/i;
+
+function hasWhatsappButton(html: string): boolean {
+  return WHATSAPP_BUTTON_RE.test(html);
+}
+function hasMetaPixel(html: string): boolean {
+  return META_PIXEL_RE.test(html);
+}
+function hasGoogleAdsPixel(html: string): boolean {
+  return GOOGLE_ADS_PIXEL_RE.test(html);
+}
+function hasGoogleAnalytics(html: string): boolean {
+  return GOOGLE_ANALYTICS_RE.test(html);
+}
+
+/** Primeiro ano de copyright encontrado no TEXTO VISÍVEL — mesmo motivo de `extractEmailFromText`: não casar `<script>`/JSON-LD. */
+function extractCopyrightYear(visibleText: string): number | null {
+  const match = visibleText.match(COPYRIGHT_YEAR_RE);
+  return match?.[1] ? Number(match[1]) : null;
+}
+
+/**
+ * Rodapé "desatualizado" = ano de copyright com mais de 1 ano de atraso do
+ * ano corrente — a folga de 1 ano evita marcar como desatualizado um site
+ * que só ainda não bateu o rodapé em janeiro. Regra de implementação
+ * própria (design.md não fixa uma) — mesmo espírito de `scaleBySignal`.
+ */
+function ehRodapeDesatualizado(copyrightYear: number | null, anoCorrente: number): boolean {
+  return copyrightYear !== null && copyrightYear < anoCorrente - 1;
+}
+
 /**
  * Abre `websiteUrl` num browser Chromium efêmero e mede os indicadores.
  *
@@ -136,15 +224,33 @@ async function runPlaywrightAnalysis(websiteUrl: string): Promise<PlaywrightAnal
       const html = await page.content();
       const mobileResponsive = hasViewportMeta(html);
 
+      // Texto visível: lido uma vez só, reaproveitado pro e-mail (quando não
+      // achou por mailto:) e pro ano de copyright — nenhuma chamada extra
+      // de rede em qualquer um dos testes de raio-x abaixo, só regex sobre
+      // o que já foi baixado.
+      const visibleText = await page.innerText("body").catch(() => "");
+
       let email = extractEmailFromMailto(html);
       if (!email) {
-        // Não crítico: se innerText falhar por qualquer motivo, apenas
-        // seguimos sem e-mail em vez de derrubar a análise inteira.
-        const visibleText = await page.innerText("body").catch(() => "");
         email = extractEmailFromText(visibleText);
       }
+      const instagramLink = extractInstagramLink(html);
 
-      return { reachable, mobileResponsive, loadTimeMs, email };
+      const copyrightYear = extractCopyrightYear(visibleText);
+
+      return {
+        reachable,
+        mobileResponsive,
+        loadTimeMs,
+        email,
+        instagramLink,
+        hasWhatsappButton: hasWhatsappButton(html),
+        hasMetaPixel: hasMetaPixel(html),
+        hasGoogleAdsPixel: hasGoogleAdsPixel(html),
+        hasGoogleAnalytics: hasGoogleAnalytics(html),
+        copyrightYear,
+        desatualizado: ehRodapeDesatualizado(copyrightYear, new Date().getFullYear()),
+      };
     } finally {
       await context.close().catch(() => {});
     }
@@ -182,7 +288,7 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
   try {
     const { data, error } = await admin
       .from("prospected_places")
-      .select("id, organization_id, website_url, rating, review_count, site_analysis_status")
+      .select("id, organization_id, search_id, place_id, website_url, rating, review_count, site_analysis_status")
       .eq("id", prospectedPlaceId)
       .eq("organization_id", row.organization_id)
       .maybeSingle();
@@ -221,18 +327,49 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
       return { consumer_key, status: "skipped", detail: "concurrent claim lost" };
     }
 
+    // T11: pesos DE VERDADE do nicho da busca — 2 consultas sequenciais
+    // (place.search_id → niche_id → weights), mesmo padrão simples usado
+    // pelos workers de CNPJ/Instagram (sem join aninhado).
+    const { data: searchRow, error: searchErr } = await admin
+      .from("prospected_searches")
+      .select("niche_id")
+      .eq("id", place.search_id)
+      .maybeSingle();
+    if (searchErr) throw new Error(`load search failed: ${searchErr.message}`);
+
+    let weights: NicheWeights | null = null;
+    if (searchRow?.niche_id) {
+      const { data: nicheRow, error: nicheErr } = await admin
+        .from("prospecting_niches")
+        .select("weights")
+        .eq("id", searchRow.niche_id as string)
+        .maybeSingle();
+      if (nicheErr) throw new Error(`load niche failed: ${nicheErr.message}`);
+      weights = (nicheRow?.weights as NicheWeights | undefined) ?? null;
+    }
+    // Nicho não encontrado (dado legado sem niche_id, ou nicho apagado) não
+    // pode travar a análise de site — cai pro mesmo shim de compatibilidade
+    // que a rota de busca usava antes de T8, só como PISO defensivo aqui.
+    const weightsParaScore: NicheWeights = weights ?? {
+      site: 100, instagram: 0, whatsapp: 0, email: 0, telefone: 0,
+      reputacao: 100, cnpj: 0, endereco: 0, linkedin: 0,
+    };
+
     const analysis = await runPlaywrightAnalysis(place.website_url);
 
-    const scoreResult = scoreFinal({
-      hasWebsite: true,
-      rating: place.rating ?? undefined,
-      reviewCount: place.review_count ?? undefined,
-      siteAnalysis: {
-        reachable: analysis.reachable,
-        mobileResponsive: analysis.mobileResponsive,
-        loadTimeMs: analysis.loadTimeMs,
+    const scoreResult = scoreFinal(
+      {
+        hasWebsite: true,
+        rating: place.rating ?? undefined,
+        reviewCount: place.review_count ?? undefined,
+        siteAnalysis: {
+          reachable: analysis.reachable,
+          mobileResponsive: analysis.mobileResponsive,
+          loadTimeMs: analysis.loadTimeMs,
+        },
       },
-    });
+      weightsParaScore,
+    );
 
     const patch: Record<string, unknown> = {
       site_analysis_status: "done",
@@ -240,6 +377,12 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
         reachable: analysis.reachable,
         mobileResponsive: analysis.mobileResponsive,
         loadTimeMs: analysis.loadTimeMs,
+        hasWhatsappButton: analysis.hasWhatsappButton,
+        hasMetaPixel: analysis.hasMetaPixel,
+        hasGoogleAdsPixel: analysis.hasGoogleAdsPixel,
+        hasGoogleAnalytics: analysis.hasGoogleAnalytics,
+        copyrightYear: analysis.copyrightYear,
+        desatualizado: analysis.desatualizado,
       },
       score_final: scoreResult.score,
       status_label: scoreResult.label,
@@ -252,6 +395,34 @@ export async function analyzeProspectSiteQuality(row: EventRow): Promise<Handler
       .eq("id", place.id)
       .eq("organization_id", place.organization_id);
     if (updErr) throw new Error(`update (done) failed: ${updErr.message}`);
+
+    // T11: encadeia o Instagram — só se o nicho dá peso a esse sinal. Achou
+    // link ou não, quem decide o que fazer é o instagram-worker (T10); aqui
+    // só se emite o evento, sempre com o link (ou `null`) que este fetch já
+    // tinha em mãos.
+    if (weightsParaScore.instagram > 0) {
+      const { error: emitErr } = await admin.rpc("emit_event", {
+        p_event_type: "prospected_place.instagram_requested",
+        p_entity_kind: "prospected_place",
+        p_entity_id: place.id,
+        p_payload: {
+          prospected_place_id: place.id,
+          search_id: place.search_id,
+          place_id: place.place_id,
+          instagram_link: analysis.instagramLink ?? null,
+        },
+        p_metadata: { source: "prospecting_site_quality" },
+        p_organization_id: place.organization_id,
+      });
+      if (emitErr) {
+        // Fire-and-forget, mesmo padrão de media-persist-worker.ts: falha de
+        // emit não desfaz a análise de site já concluída com sucesso.
+        logger.warn("[prospecting-site-quality] emit instagram_requested falhou (non-blocking)", {
+          prospected_place_id: place.id,
+          detail: emitErr.message,
+        });
+      }
+    }
 
     return { consumer_key, status: "ok" };
   } catch (err) {

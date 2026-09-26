@@ -23,6 +23,9 @@ export interface RawPlace {
   websiteUrl: string | null;
   rating: number | null;
   reviewCount: number | null;
+  lat: number | null;
+  lng: number | null;
+  googleMapsUrl: string | null;
 }
 
 /** Resultado agregado de todas as páginas buscadas. */
@@ -74,12 +77,26 @@ export interface SearchPlacesDeps {
 const PLACES_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 
 /**
- * Só os 7 campos que `RawPlace` de fato usa — nada além disso. A Places API
- * (New) cobra por SKU conforme os campos pedidos no field mask, então cada
- * campo extra aqui é custo recorrente sem uso no produto.
+ * Os campos que `RawPlace` de fato usa, mais `nextPageToken`. A Places API
+ * (New) só devolve o que está listado no field mask — inclusive campos de
+ * TOPO como `nextPageToken`, não só os de `places[]`. Sem ele aqui, a Google
+ * nunca manda o token de próxima página mesmo quando existem mais de 20
+ * resultados, e a busca capa silenciosamente em 20 sempre (achado ao
+ * investigar relato real: "Pizzaria em São Paulo" trazendo só 20 quando a
+ * própria Google confirma ter mais, testado direto com curl/fetch cru).
+ * Fora isso, nenhum campo extra: a New API cobra por SKU conforme os campos
+ * pedidos, então cada um a mais é custo recorrente sem uso no produto.
+ *
+ * `location`/`googleMapsUri` são exceção deliberada a essa regra — mas não
+ * custo novo: as duas são tier Pro, e `nationalPhoneNumber`/`websiteUri`/
+ * `rating` (já pedidos acima) já são tier Enterprise. A Places API cobra pelo
+ * campo MAIS CARO do request, não por campo adicional — um request que já
+ * paga Enterprise não fica mais caro ao ganhar campos Pro (confirmado em
+ * developers.google.com/maps/documentation/places/web-service/usage-and-billing,
+ * set/2026). Reconfira lá se o pricing mudar antes de assumir isto de novo.
  */
 const FIELD_MASK =
-  "places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount";
+  "places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.location,places.googleMapsUri,nextPageToken";
 
 const PAGE_SIZE = 20;
 const MAX_PAGES = 3;
@@ -104,6 +121,8 @@ interface PlacesApiResponseItem {
   websiteUri?: string;
   rating?: number;
   userRatingCount?: number;
+  location?: { latitude?: number; longitude?: number };
+  googleMapsUri?: string;
 }
 
 interface PlacesApiSearchTextResponse {
@@ -132,6 +151,9 @@ function mapRawPlace(item: PlacesApiResponseItem): RawPlace {
     websiteUrl: item.websiteUri ?? null,
     rating: item.rating ?? null,
     reviewCount: item.userRatingCount ?? null,
+    lat: item.location?.latitude ?? null,
+    lng: item.location?.longitude ?? null,
+    googleMapsUrl: item.googleMapsUri ?? null,
   };
 }
 

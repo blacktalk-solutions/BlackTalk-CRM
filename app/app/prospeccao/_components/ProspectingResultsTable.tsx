@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -111,6 +112,13 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
   const t = useT();
   const [page, setPage] = useState(1);
   const [places, setPlaces] = useState<ProspectedPlaceDTO[]>(initialPlaces);
+  // T14 (`.specs/features/prospeccao-nichos-e-enriquecimento/`): esconde por
+  // padrão quem reprovou nos requisitos do nicho — mesmo espírito do painel
+  // do `prospeccao-kit-aluno` (`listar --oportunidade` só mostra quem passou).
+  // "Reprovado nos requisitos" é DISTINTO de "nota baixa" (`requisitosOk`
+  // separado de `statusLabel`) — por isso é um filtro à parte, não um valor
+  // a mais de status.
+  const [mostrarReprovados, setMostrarReprovados] = useState(false);
   const [reanalyzeLoadingIds, setReanalyzeLoadingIds] = useState<Set<string>>(new Set());
   const [reanalyzeErrorMap, setReanalyzeErrorMap] = useState<Map<string, string>>(new Map());
   const [promoteLoadingIds, setPromoteLoadingIds] = useState<Set<string>>(new Set());
@@ -236,8 +244,10 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
     enabled: !!searchId,
   });
 
-  const total = totalResultPages(places.length);
-  const linhasDaPagina = paginateResults(places, page);
+  const reprovadosCount = places.filter((p) => !p.requisitosOk).length;
+  const placesFiltrados = mostrarReprovados ? places : places.filter((p) => p.requisitosOk);
+  const total = totalResultPages(placesFiltrados.length);
+  const linhasDaPagina = paginateResults(placesFiltrados, page);
 
   return (
     <div className="flex flex-col gap-4">
@@ -256,10 +266,25 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
       ) : null}
 
       {places.length > 0 ? (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={handleExportCsv}>
             {t("Exportar CSV")}
           </Button>
+          {reprovadosCount > 0 ? (
+            <Button
+              variant={mostrarReprovados ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => {
+                setMostrarReprovados((v) => !v);
+                setPage(1);
+              }}
+              data-testid="prospeccao-toggle-reprovados"
+            >
+              {mostrarReprovados
+                ? t("Ocultar reprovados nos requisitos")
+                : `${t("Mostrar reprovados nos requisitos")} (${reprovadosCount})`}
+            </Button>
+          ) : null}
         </div>
       ) : null}
 
@@ -289,6 +314,19 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                   </div>
                 </TableCell>
               </TableRow>
+            ) : placesFiltrados.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center">
+                  <div className="flex flex-col items-center gap-1 py-10 text-sm text-muted-foreground">
+                    <p className="font-medium">
+                      {t("Todos os resultados desta busca reprovaram nos requisitos do nicho.")}
+                    </p>
+                    <Button variant="link" size="sm" onClick={() => setMostrarReprovados(true)}>
+                      {t("Mostrar mesmo assim")}
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
             ) : (
               linhasDaPagina.map((place) => {
                 const meta = STATUS_META[place.statusLabel as StatusLabel] ?? STATUS_META.baixa;
@@ -297,8 +335,26 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                 const errorMessage = reanalyzeErrorMap.get(place.id);
                 return (
                   <TableRow key={place.id} data-testid="prospeccao-linha">
-                    <TableCell className="max-w-[220px] truncate font-medium">
-                      {place.name}
+                    <TableCell className="max-w-[220px] font-medium">
+                      <div className="flex items-center gap-1.5">
+                        {/* T15: porta de saída pra ficha por empresa — URL própria, compartilhável. */}
+                        <Link
+                          href={`/app/prospeccao/${searchId}/${place.id}`}
+                          className="truncate underline-offset-2 hover:underline"
+                          data-testid="prospeccao-link-ficha"
+                        >
+                          {place.name}
+                        </Link>
+                        {!place.requisitosOk ? (
+                          <Badge
+                            variant="neutral"
+                            title={place.motivoRequisitos ?? undefined}
+                            data-testid="prospeccao-fora-do-perfil"
+                          >
+                            {t("Fora do perfil")}
+                          </Badge>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell className="max-w-[240px] truncate text-muted-foreground">
                       {place.address ?? "—"}
@@ -343,14 +399,14 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                             href={whatsappLink}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent underline underline-offset-2 hover:bg-accent/10"
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent underline underline-offset-2 hover:bg-accent/10"
                             title={t("Enviar mensagem no WhatsApp")}
                           >
                             {t("WhatsApp")}
                           </a>
                         ) : (
                           <span
-                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-muted-foreground opacity-50"
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-50"
                             title={t("Telefone não disponível")}
                           >
                             {t("WhatsApp")}
@@ -361,7 +417,7 @@ export function ProspectingResultsTable({ searchId, initialPlaces, placesApiCapp
                         {place.promotedLeadId ? (
                           <a
                             href={`/app/leads/${place.promotedLeadId}`}
-                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-success-fg bg-success-bg/30 hover:bg-success-bg/50 transition-colors"
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-success-fg bg-success-bg/30 hover:bg-success-bg/50 transition-colors"
                             title={t("Ver lead no funil")}
                           >
                             {t("No funil")}

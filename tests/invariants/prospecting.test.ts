@@ -241,3 +241,94 @@ describe("0234 · claim otimista de prospected_places.site_analysis_status (bôn
     ).toBe("processing");
   });
 });
+
+/**
+ * T1 (`prospeccao-nichos-e-enriquecimento`) — prova comportamental de
+ * isolamento RLS para `prospecting_niches`
+ * (migration 0236, `supabase/migrations/..._0236_prospeccao_nichos.sql`).
+ *
+ * Mesmo padrão do describe acima (0234): fixture própria, namespace pelo
+ * número da migration (0236), helpers `countAs`/`writeCountAs`/`sql` de
+ * `./gov-helpers`. Arquivo já existe pra este domínio — entra aqui, não em
+ * `TABLES` de `rls-isolation.test.ts` (congelado).
+ *
+ * Também confere, estruturalmente, que `prospected_searches.niche_id` e
+ * `prospected_places.requisitos_ok`/`motivo_requisitos` (as duas colunas que
+ * a mesma migration acrescenta nas tabelas já existentes) existem — não é
+ * prova de RLS (essas colunas vivem em tabela já coberta acima), é só
+ * garantir que a migration 0236 fez as DUAS partes do que promete.
+ */
+const NICHE_ORG_A = "02360000-0000-4000-8000-000000000001";
+const NICHE_ORG_B = "02360000-0000-4000-8000-000000000002";
+const NICHE_MEMBER_A = "02361111-0000-4000-8000-000000000001";
+const NICHE_MEMBER_B = "02361111-0000-4000-8000-000000000002";
+const NICHE_A = "02362222-0000-4000-8000-000000000001";
+const NICHE_A_INVADIDO = "02362222-0000-4000-8000-000000000002";
+
+function seedNiche(): void {
+  sql(`
+    insert into auth.users (id, email) values
+      ('${NICHE_MEMBER_A}', 'niche-member-a@invariant.test'),
+      ('${NICHE_MEMBER_B}', 'niche-member-b@invariant.test')
+      on conflict do nothing;
+    insert into public.organizations (id, slug, legal_name, display_name) values
+      ('${NICHE_ORG_A}', 'niche-inv-a', 'Niche Invariant A', 'Niche Inv A'),
+      ('${NICHE_ORG_B}', 'niche-inv-b', 'Niche Invariant B', 'Niche Inv B')
+      on conflict do nothing;
+    insert into public.user_organizations (user_id, organization_id, role, accepted_at) values
+      ('${NICHE_MEMBER_A}', '${NICHE_ORG_A}', 'manager', now()),
+      ('${NICHE_MEMBER_B}', '${NICHE_ORG_B}', 'manager', now())
+      on conflict do nothing;
+  `);
+}
+
+// Colunas mínimas NOT NULL sem default (migration 0236): organization_id,
+// name, service_type, search_terms, created_by.
+const NICHE_COLS = "(id, organization_id, name, service_type, search_terms, created_by)";
+function nicheValues(id: string, org: string, createdBy: string): string {
+  return `('${id}', '${org}', 'Clínica odontológica', 'venda de site', array['clínica odontológica'], '${createdBy}')`;
+}
+
+describe("0236 · nichos de prospecção — RLS de prospecting_niches", () => {
+  it("a tabela nasce com RLS ligada e a policy de tenant", () => {
+    seedNiche();
+    expect(sql(`select relrowsecurity from pg_class where relname = 'prospecting_niches'`)).toBe("t");
+    expect(
+      sql(`select policyname from pg_policies
+            where schemaname = 'public' and tablename = 'prospecting_niches' and permissive = 'PERMISSIVE' order by 1`),
+    ).toBe("tenant_isolation_prospecting_niches_all");
+  });
+
+  it("membro da org A cria um nicho e lê de volta (controle positivo)", () => {
+    expect(
+      writeCountAs(NICHE_MEMBER_A, `insert into public.prospecting_niches ${NICHE_COLS} values ${nicheValues(NICHE_A, NICHE_ORG_A, NICHE_MEMBER_A)}`),
+    ).toBe(1);
+    expect(countAs(NICHE_MEMBER_A, `select count(*) from public.prospecting_niches where id = '${NICHE_A}';`)).toBe(1);
+  });
+
+  it("membro da org B NÃO lê o nicho da org A", () => {
+    expect(countAs(NICHE_MEMBER_B, `select count(*) from public.prospecting_niches where id = '${NICHE_A}';`)).toBe(0);
+    expect(
+      countAs(NICHE_MEMBER_B, `select count(*) from public.prospecting_niches where organization_id = '${NICHE_ORG_A}';`),
+    ).toBe(0);
+  });
+
+  it("membro da org B NÃO escreve nicho COM o organization_id da org A (o lado `with check`)", () => {
+    expect(
+      writeCountAs(NICHE_MEMBER_B, `insert into public.prospecting_niches ${NICHE_COLS} values ${nicheValues(NICHE_A_INVADIDO, NICHE_ORG_A, NICHE_MEMBER_B)}`),
+    ).toBe(0);
+    expect(sql(`select count(*) from public.prospecting_niches where id = '${NICHE_A_INVADIDO}'`)).toBe("0");
+  });
+
+  it("prospected_searches.niche_id e prospected_places.requisitos_ok/motivo_requisitos existem (migration 0236, segunda metade)", () => {
+    expect(
+      sql(`select column_name from information_schema.columns
+            where table_schema = 'public' and table_name = 'prospected_searches' and column_name = 'niche_id'`),
+    ).toBe("niche_id");
+    expect(
+      sql(`select string_agg(column_name, ',' order by column_name) from information_schema.columns
+            where table_schema = 'public' and table_name = 'prospected_places'
+              and column_name in ('requisitos_ok', 'motivo_requisitos')`),
+    ).toBe("motivo_requisitos,requisitos_ok");
+  });
+});
