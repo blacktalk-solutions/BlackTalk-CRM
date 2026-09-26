@@ -2,8 +2,8 @@
  * Client da Google Places API (New) — busca de estabelecimentos por texto.
  *
  * Server-only por construção: lê `GOOGLE_PLACES_API_KEY` de `lib/env.ts`
- * (validada via Zod, junto de toda outra chave externa — WAHA, Resend,
- * Google Agenda etc.) e nunca deveria ser importado por um Client Component.
+ * (validada via Zod, junto de toda outra chave externa do app) e nunca
+ * deveria ser importado por um Client Component.
  * Não há `"use client"` neste arquivo nem chamada de browser API — só
  * `fetch`/`setTimeout`, que existem tanto em Node quanto em browser, então a
  * fronteira aqui é de IMPORT (nenhuma rota/componente client deve importar

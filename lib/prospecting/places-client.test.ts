@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { env } from "@/lib/env";
 import { searchPlaces, PlacesApiError } from "./places-client";
 
-// `lib/env.ts` roda a validação Zod inteira do app (Supabase, WAHA, etc.) no
-// import — mockar aqui é o mesmo padrão de lib/supabase/cookie-secure.test.ts:
+// `lib/env.ts` roda a validação Zod inteira do app (dezenas de chaves
+// obrigatórias) no import — mockar aqui é o mesmo padrão de
+// lib/supabase/cookie-secure.test.ts:
 // devolve um objeto simples e mutável, então cada teste só atribui a chave que
 // importa, sem arrastar as ~30 outras variáveis obrigatórias do schema real.
 vi.mock("@/lib/env", () => ({

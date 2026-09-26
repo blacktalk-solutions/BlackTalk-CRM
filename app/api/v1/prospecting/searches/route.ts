@@ -63,15 +63,15 @@ interface NicheForSearch {
  *    `app/api/v1/notifications/push/route.ts`) — 503 por consistência com
  *    esse precedente, não 500: não é bug de código, é operação sem configurar.
  *  - `invalid_api_key_or_billing`: a Google respondeu (chave errada ou
- *    billing desligado) — mesma forma de `waha_error` (502, chamada a um
- *    terceiro que devolveu erro) em vez de `unavailable`, porque aqui HOUVE
- *    resposta HTTP do lado de fora, só que ela nega o pedido.
+ *    billing desligado) — mesma forma dos erros de terceiro que devolveram
+ *    resposta (502) em vez de `unavailable`, porque aqui HOUVE resposta HTTP
+ *    do lado de fora, só que ela nega o pedido.
  *  - `quota_exceeded`: cota da Google esgotada — 503 (tente mais tarde),
  *    não 429 (`rate_limited` já é o código genérico para "nós limitamos
  *    VOCÊ"; aqui é a Google nos limitando, então o código próprio evita
  *    confundir os dois sentidos).
  *  - `unknown_error`: também cobre falha de TRANSPORTE (DNS, timeout —
- *    ver places-client.ts). Mesmo tratamento de `waha_error`: 502.
+ *    ver places-client.ts). Mesmo tratamento de erro de terceiro: 502.
  */
 const PLACES_ERROR_STATUS: Record<PlacesApiErrorCode, number> = {
   missing_api_key: 503,
