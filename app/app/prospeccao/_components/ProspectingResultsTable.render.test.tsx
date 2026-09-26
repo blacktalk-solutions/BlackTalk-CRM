@@ -35,6 +35,9 @@ function place(overrides: Partial<ProspectedPlaceDTO>): ProspectedPlaceDTO {
     promotedAt: null,
     requisitosOk: true,
     motivoRequisitos: null,
+    lat: null,
+    lng: null,
+    googleMapsUrl: null,
     ...overrides,
   };
 }

@@ -35,6 +35,9 @@ describe("applyPlaceUpdate", () => {
     promotedAt: null,
     requisitosOk: true,
     motivoRequisitos: null,
+    lat: null,
+    lng: null,
+    googleMapsUrl: null,
     ...overrides,
   });
 
