@@ -302,8 +302,13 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
       await expect(page).toHaveURL(new RegExp(`/app/leads/${leadId}`));
 
       // Verifica que o lead foi criado com o nome do lugar
-      // O card/heading do lead mostra o nome que veio da prospecção
-      await expect(page.getByText("Clínica Odontológica Nova")).toBeVisible();
+      // O deep link abre o painel de detalhe SOBRE o kanban: o nome aparece
+      // duas vezes na tela (botão do card atrás + heading do painel aberto),
+      // então getByText sozinho é ambíguo (strict mode). O heading é quem
+      // prova que o painel do lead certo abriu.
+      await expect(
+        page.getByRole("heading", { name: "Clínica Odontológica Nova" }),
+      ).toBeVisible();
 
       // ═══ Step 7: Captura screenshots como evidência ═══
 
