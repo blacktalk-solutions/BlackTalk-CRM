@@ -24,10 +24,10 @@ describe("NichosManager", () => {
     expect(screen.getByText("Nenhum nicho cadastrado ainda.")).toBeInTheDocument();
   });
 
-  it("lista os nichos existentes, com nome e tipo de serviço", () => {
+  it("lista os nichos existentes, com nome e termos de busca", () => {
     render(<NichosManager initialNiches={[NICHE]} apifyTokenConfigured />);
     expect(screen.getByText("Clínicas odontológicas")).toBeInTheDocument();
-    expect(screen.getByText("venda de site")).toBeInTheDocument();
+    expect(screen.getByText("clínica odontológica")).toBeInTheDocument();
   });
 
   it("\"Novo nicho\" abre o wizard; \"Cancelar\" volta pra lista", async () => {

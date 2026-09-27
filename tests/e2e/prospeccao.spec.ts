@@ -462,7 +462,6 @@ test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () 
       await page.getByTestId("niche-novo").click();
 
       await page.getByLabel("Nome do nicho").fill(nicheName);
-      await page.getByLabel("O que você vende para esse nicho").fill("venda de site");
       await page
         .getByLabel("Como esse cliente aparece no Google Maps (um termo por linha)")
         .fill(`clínica e2e ${ts}`);

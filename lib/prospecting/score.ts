@@ -52,6 +52,28 @@ export interface NicheWeights {
 }
 
 /**
+ * Pesos padrão — mesmo `PESOS_PADRAO` do `prospeccao-kit-aluno` (`lib/score.mjs`),
+ * validado por semanas de uso real antes desta feature (design.md, "Tech
+ * Decisions"). Soma 100.
+ *
+ * Duplo uso (0239): sugestão inicial no wizard de criação de nicho, e o
+ * peso de fato aplicado numa busca SEM nicho escolhido (nicho virou
+ * opcional — ver `searches/route.ts`). Um só lugar pra não os dois se
+ * desalinharem com o tempo.
+ */
+export const PESOS_PADRAO: NicheWeights = {
+  site: 25,
+  instagram: 15,
+  email: 15,
+  telefone: 10,
+  whatsapp: 10,
+  reputacao: 10,
+  cnpj: 5,
+  linkedin: 5,
+  endereco: 5,
+};
+
+/**
  * Requisitos de um nicho — `prospecting_niches.requirements` (migration 0236).
  * O que ELIMINA (via `checkRequirements`), diferente de `weights`, que só
  * ordena quem sobrou. Mesma distinção do `prospeccao-kit-aluno`

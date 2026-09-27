@@ -51,7 +51,6 @@ describe("NicheWizard — criação do zero", () => {
     render(<NicheWizard niche={null} apifyTokenConfigured onSaved={onSaved} onCancel={() => {}} />);
 
     await user.type(screen.getByLabelText("Nome do nicho"), "Barbearias");
-    await user.type(screen.getByLabelText("O que você vende para esse nicho"), "venda de site");
     await user.type(
       screen.getByLabelText("Como esse cliente aparece no Google Maps (um termo por linha)"),
       "barbearia",
@@ -76,7 +75,7 @@ describe("NicheWizard — criação do zero", () => {
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: "niche-novo" }));
   });
 
-  it("não avança do passo 1 sem nome/serviço/termos", async () => {
+  it("não avança do passo 1 sem nome/termos", async () => {
     const user = userEvent.setup();
     render(<NicheWizard niche={null} apifyTokenConfigured onSaved={vi.fn()} onCancel={() => {}} />);
 
@@ -91,7 +90,6 @@ describe("NicheWizard — criação do zero", () => {
     render(<NicheWizard niche={null} apifyTokenConfigured onSaved={vi.fn()} onCancel={() => {}} />);
 
     await user.type(screen.getByLabelText("Nome do nicho"), "Barbearias");
-    await user.type(screen.getByLabelText("O que você vende para esse nicho"), "venda de site");
     await user.type(
       screen.getByLabelText("Como esse cliente aparece no Google Maps (um termo por linha)"),
       "barbearia",
@@ -114,7 +112,6 @@ describe("NicheWizard — criação do zero", () => {
     render(<NicheWizard niche={null} apifyTokenConfigured={false} onSaved={vi.fn()} onCancel={() => {}} />);
 
     await user.type(screen.getByLabelText("Nome do nicho"), "Barbearias");
-    await user.type(screen.getByLabelText("O que você vende para esse nicho"), "venda de site");
     await user.type(
       screen.getByLabelText("Como esse cliente aparece no Google Maps (um termo por linha)"),
       "barbearia",
@@ -131,7 +128,6 @@ describe("NicheWizard — edição", () => {
     render(<NicheWizard niche={NICHE_EXISTENTE} apifyTokenConfigured onSaved={vi.fn()} onCancel={() => {}} />);
 
     expect(screen.getByLabelText("Nome do nicho")).toHaveValue("Clínicas odontológicas");
-    expect(screen.getByLabelText("O que você vende para esse nicho")).toHaveValue("venda de site");
     expect(screen.getByText(/vale só para buscas futuras/)).toBeInTheDocument();
   });
 

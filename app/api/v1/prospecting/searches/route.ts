@@ -5,9 +5,10 @@ import { requireSupportWrite } from "@/lib/impersonate/support";
  * (design.md "API": "`POST /api/v1/prospecting/searches` (alterado)").
  *
  * Orquestra P1 (síncrono, dentro da própria request): valida o body → carrega
- * o NICHO escolhido (pesos/requisitos, T7) → busca na Google Places API
- * (New) → calcula `scoreInitial`/`checkRequirements` por linha usando os
- * pesos/requisitos DAQUELE nicho → persiste a busca + os resultados em lote
+ * o NICHO escolhido, se houver (pesos/requisitos, T7; opcional desde 0239 —
+ * sem nicho usa `PESOS_PADRAO` e requisitos vazios) → busca na Google Places
+ * API (New) → calcula `scoreInitial`/`checkRequirements` por linha → persiste
+ * a busca + os resultados em lote
  * → emite `site_quality_requested` (só quem tem site), `cnpj_requested`
  * (TODO resultado) e `instagram_requested` (só quem NÃO tem site e
  * `weights.instagram > 0` — quem TEM site ganha esse evento depois, do
@@ -34,6 +35,7 @@ import {
 } from "@/lib/prospecting/places-client";
 import {
   checkRequirements,
+  PESOS_PADRAO,
   scoreInitial,
   type NicheRequirements,
   type NicheWeights,
@@ -47,7 +49,7 @@ export const dynamic = "force-dynamic";
 /** Forma de uma linha de `prospecting_niches` como esta rota lê (só o que usa). */
 interface NicheForSearch {
   id: string;
-  service_type: string;
+  service_type: string | null;
   requirements: NicheRequirements | null;
   weights: NicheWeights;
 }
@@ -247,38 +249,38 @@ export async function POST(req: NextRequest): Promise<Response> {
     throw err;
   }
 
-  // `nicheId` ausente tem código PRÓPRIO (T8, "Done when") — não é um 422
-  // genérico de forma, é "a tela deveria ter orientado a escolher/criar um
-  // nicho antes" (P1, spec.md, critério 6).
-  if (!input.nicheId) {
-    return fail("niche_required", t("Escolha um nicho de prospecção antes de buscar."), 400, {
-      requestId,
-    });
-  }
-
   const admin = createAdminClient();
 
+  // 0239: nicho virou OPCIONAL — achado validando em produção que a busca
+  // travava por inteiro sem nenhum nicho cadastrado (wizard de 4 passos
+  // antes da primeira busca). Sem `nicheId`, a busca segue ad-hoc: pesos
+  // caem no `PESOS_PADRAO` (mesma sugestão do wizard) e requisitos ficam
+  // vazios — `checkRequirements({}, {})` já trata isso como "nada reprova".
+  //
   // Carrega o nicho ANTES de gastar a chamada paga à Places API — um nicho
   // inexistente/de outra organização não deveria custar cota da Google.
   // `.eq("organization_id", ...)` além do filtro por id: RLS já restringe,
   // isto é defesa em profundidade e o que faz "nicho de outra organização"
   // devolver 404 (não vaza "existe, mas não é seu" via 403).
-  const { data: nicheRow, error: nicheErr } = await admin
-    .from("prospecting_niches")
-    .select("id, service_type, requirements, weights")
-    .eq("id", input.nicheId)
-    .eq("organization_id", org.orgId)
-    .maybeSingle();
+  let niche: NicheForSearch | null = null;
+  if (input.nicheId) {
+    const { data: nicheRow, error: nicheErr } = await admin
+      .from("prospecting_niches")
+      .select("id, service_type, requirements, weights")
+      .eq("id", input.nicheId)
+      .eq("organization_id", org.orgId)
+      .maybeSingle();
 
-  if (nicheErr) {
-    return fail("internal_error", nicheErr.message, 500, { requestId });
+    if (nicheErr) {
+      return fail("internal_error", nicheErr.message, 500, { requestId });
+    }
+    if (!nicheRow) {
+      return fail("not_found", t("Nicho não encontrado."), 404, { requestId });
+    }
+    niche = nicheRow as unknown as NicheForSearch;
   }
-  if (!nicheRow) {
-    return fail("not_found", t("Nicho não encontrado."), 404, { requestId });
-  }
-  const niche = nicheRow as unknown as NicheForSearch;
-  const weights = niche.weights;
-  const requirements = niche.requirements ?? {};
+  const weights = niche?.weights ?? PESOS_PADRAO;
+  const requirements = niche?.requirements ?? {};
 
   let places: RawPlace[];
   let placesApiCapped: boolean;
@@ -305,9 +307,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       location: input.location,
       // CÓPIA do service_type do nicho NO MOMENTO da busca, não um join ao
       // vivo (design.md, "Data Models") — editar o nicho depois (T7 PATCH)
-      // nunca muda o texto gravado aqui.
-      service_type: niche.service_type,
-      niche_id: niche.id,
+      // nunca muda o texto gravado aqui. Sem nicho (0239): omite a chave e
+      // deixa o DEFAULT da coluna ('venda_de_site') resolver — dado morto,
+      // mas inofensivo, não vale outra migration só por isto.
+      ...(niche?.service_type ? { service_type: niche.service_type } : {}),
+      niche_id: niche?.id ?? null,
       requested_by: user.id,
       result_count: places.length,
       places_api_capped: placesApiCapped,
@@ -481,8 +485,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     metadata: {
       business_type: input.businessType,
       location: input.location,
-      niche_id: niche.id,
-      service_type: niche.service_type,
+      niche_id: niche?.id ?? null,
+      service_type: niche?.service_type ?? null,
       result_count: placeRows.length,
       places_api_capped: placesApiCapped,
       with_website_count: comSite.length,
