@@ -14,6 +14,7 @@ import {
   type ProspectedSearchRow,
 } from "@/app/api/v1/prospecting/searches/route";
 import { ProspectingResultsTable } from "../_components/ProspectingResultsTable";
+import { SalvarComoNichoBanner } from "../_components/SalvarComoNichoBanner";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,20 @@ export default async function ProspeccaoDetailPage({
 
   const places = ((placeRows ?? []) as unknown as ProspectedPlaceRow[]).map(toPlaceDTO);
 
+  // Nome do nicho só pra exibir o aviso "usando critérios de X" — não muda
+  // resultado nenhum, então uma query solta e leve (1 linha, sem PLACES) em
+  // vez de arrastar nome pra dentro do SELECT/DTO de busca.
+  let nicheName: string | null = null;
+  if (search.nicheId) {
+    const { data: nicheRow } = await supabase
+      .from("prospecting_niches")
+      .select("name")
+      .eq("id", search.nicheId)
+      .eq("organization_id", activeOrg.orgId)
+      .maybeSingle();
+    nicheName = (nicheRow as { name: string } | null)?.name ?? null;
+  }
+
   return (
     <div className="flex h-full flex-col gap-6 p-6">
       <header className="flex flex-col gap-1">
@@ -95,6 +110,12 @@ export default async function ProspeccaoDetailPage({
           })}
         </p>
       </header>
+
+      <SalvarComoNichoBanner
+        businessType={search.businessType}
+        nicheId={search.nicheId}
+        nicheName={nicheName}
+      />
 
       <ProspectingResultsTable
         searchId={search.id}
