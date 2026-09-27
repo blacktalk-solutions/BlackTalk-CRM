@@ -1,15 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/hooks/i18n/useT";
-import { CircleNotch, MagnifyingGlass, X } from "@/lib/ui/icons";
+import { CircleNotch, MagnifyingGlass } from "@/lib/ui/icons";
 import type { NicheDTO } from "@/app/api/v1/prospecting/niches/route";
 
 interface SearchApiSuccess {
@@ -27,17 +26,22 @@ interface Props {
 const MAX_SUGESTOES = 8;
 
 /**
- * Formulário de busca de `/app/prospeccao` (T6, `.specs/features/prospeccao-google-maps/`;
- * seletor de nicho trocando o antigo campo fixo em T14; nicho virando
- * OPCIONAL com autocomplete em 0239).
+ * Formulário de busca de `/app/prospeccao` (T6; seletor de nicho trocando o
+ * antigo campo fixo em T14; nicho virando OPCIONAL com autocomplete em 0239;
+ * cadastro de nicho REMOVIDO — casamento por nome do que se digita, sem
+ * tela própria — na sessão seguinte, achado validando em produção).
  *
- * Achado validando em produção: exigir escolher um nicho pré-cadastrado
- * travava a busca inteira sem nenhum criado ainda — um wizard de 4 passos
- * ANTES da primeira busca. `nicheId` é opcional desde a rota (0239): "Tipo
- * de negócio" é o próprio campo de autocomplete — digitar sugere nichos
- * salvos (por nome), escolher um vincula `nicheId` (pesos/requisitos daquele
- * nicho passam a valer); só digitar e buscar, sem escolher nada, funciona
- * igual — a busca usa `PESOS_PADRAO` e nenhum requisito elimina resultado.
+ * "Tipo de negócio" é o próprio campo de nicho: `nichoCasado` é DERIVADO do
+ * texto digitado (casamento exato, sem acento/maiúscula) contra os nichos já
+ * salvos — funciona tanto escolhendo uma sugestão do autocomplete quanto só
+ * digitando o nome igual, sem tocar no dropdown (achado pedido: "mesmo assim
+ * o usuário não clicar no autocomplete e já existir, o sistema avisa"). Não
+ * há mais tela de cadastro: um nicho só nasce pelo botão "Salvar como nicho"
+ * na tela de resultados (`ProspectingResultsHeader`), com pesos padrão fixos
+ * — nada aqui pergunta peso/requisito, e não vai perguntar: a Fase 2 (PRD do
+ * diagnóstico completo) deve substituir esse sistema de pesos por algo que
+ * avalia todo sinal pra qualquer resultado, então não vale investir em mais
+ * UI de configuração numa peça com prazo de validade.
  *
  * Ao submeter, chama `POST /api/v1/prospecting/searches` e navega pro
  * detalhe da busca — `app/app/prospeccao/[searchId]/page.tsx` é quem
@@ -53,22 +57,36 @@ export function ProspectingSearchForm({ niches }: Props) {
   const router = useRouter();
   const [businessType, setBusinessType] = useState("");
   const [location, setLocation] = useState("");
-  const [nicheId, setNicheId] = useState<string>("");
   const [sugestoesAbertas, setSugestoesAbertas] = useState(false);
+  // Some quando o texto muda de novo — reescrever quebra o casamento
+  // automático de propósito, então "ignorar" não precisa sobreviver a isso.
+  const [nichoIgnorado, setNichoIgnorado] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  const nichoSelecionado = niches.find((n) => n.id === nicheId) ?? null;
+  useEffect(() => {
+    setNichoIgnorado(false);
+  }, [businessType]);
+
+  const normalizado = (s: string) => s.trim().toLowerCase();
+
+  const nichoCasado = useMemo(() => {
+    const alvo = normalizado(businessType);
+    if (!alvo) return null;
+    return niches.find((n) => normalizado(n.name) === alvo) ?? null;
+  }, [businessType, niches]);
+
+  const nichoAplicado = nichoIgnorado ? null : nichoCasado;
 
   const sugestoes = useMemo(() => {
-    const termo = businessType.trim().toLowerCase();
+    const termo = normalizado(businessType);
     if (!termo) return [];
-    return niches.filter((n) => n.name.toLowerCase().includes(termo)).slice(0, MAX_SUGESTOES);
+    return niches.filter((n) => normalizado(n.name).includes(termo)).slice(0, MAX_SUGESTOES);
   }, [businessType, niches]);
 
   function escolherNicho(niche: NicheDTO) {
     setBusinessType(niche.name);
-    setNicheId(niche.id);
+    setNichoIgnorado(false);
     setSugestoesAbertas(false);
   }
 
@@ -85,7 +103,7 @@ export function ProspectingSearchForm({ niches }: Props) {
         body: JSON.stringify({
           businessType: businessType.trim(),
           location: location.trim(),
-          ...(nicheId ? { nicheId } : {}),
+          ...(nichoAplicado ? { nicheId: nichoAplicado.id } : {}),
         }),
       });
       const json = (await res.json()) as SearchApiSuccess | SearchApiError;
@@ -114,14 +132,7 @@ export function ProspectingSearchForm({ niches }: Props) {
               <Input
                 id="prospeccao-tipo-negocio"
                 value={businessType}
-                onChange={(e) => {
-                  setBusinessType(e.target.value);
-                  // Editar o texto depois de escolher um nicho desvincula —
-                  // o texto não bate mais com o nome salvo, então os
-                  // pesos/requisitos daquele nicho não deveriam mais valer.
-                  if (nicheId) setNicheId("");
-                  setSugestoesAbertas(true);
-                }}
+                onChange={(e) => setBusinessType(e.target.value)}
                 onFocus={() => setSugestoesAbertas(true)}
                 onBlur={() => setSugestoesAbertas(false)}
                 placeholder={t("Ex.: clínica odontológica, pizzaria, barbearia…")}
@@ -154,18 +165,29 @@ export function ProspectingSearchForm({ niches }: Props) {
                   ))}
                 </ul>
               ) : null}
-              {nichoSelecionado ? (
-                <Badge variant="secondary" className="w-fit gap-1">
-                  {t("Usando nicho")}: {nichoSelecionado.name}
-                  <button
-                    type="button"
-                    aria-label={t("Remover nicho")}
-                    onClick={() => setNicheId("")}
-                    className="ml-1"
-                  >
-                    <X size={12} aria-hidden />
-                  </button>
-                </Badge>
+              {nichoCasado ? (
+                <p className="text-xs text-muted-foreground" data-testid="prospeccao-nicho-casado">
+                  {nichoAplicado ? (
+                    <>
+                      {t("Usando critérios de")} <strong>{nichoCasado.name}</strong>.{" "}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2"
+                        onClick={() => setNichoIgnorado(true)}
+                      >
+                        {t("Buscar sem eles")}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="underline underline-offset-2"
+                      onClick={() => setNichoIgnorado(false)}
+                    >
+                      {t("Usar critérios de")} {nichoCasado.name}
+                    </button>
+                  )}
+                </p>
               ) : null}
             </div>
 

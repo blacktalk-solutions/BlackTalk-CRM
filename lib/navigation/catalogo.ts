@@ -218,20 +218,6 @@ export const NAV_CATALOG = [
     minRole: "manager",
   },
   {
-    // T13 de `.specs/features/prospeccao-nichos-e-enriquecimento/`: onde o
-    // operador cadastra o critério (termos, requisitos, pesos) que toda busca
-    // de prospecção passa a exigir escolher (T8). Mesmo grupo/seção da tela de
-    // busca — item 14 do Definition of Done pede porta declarada aqui.
-    href: "/app/prospeccao/nichos",
-    label: "Nichos de prospecção",
-    description: "Cadastre o critério (termos, requisitos, pesos) que a busca de prospecção usa para pontuar.",
-    icon: "Funnel",
-    group: "crm",
-    section: "Encontrar clientes novos",
-    // Mesmo piso da busca/CRUD de nicho na API (requireRole('manager')).
-    minRole: "manager",
-  },
-  {
     // ⚠️ Esta tela nasceu porque a FERRAMENTA já existia sem ela. O agente de IA
     // vinha com "procurar produto na loja" ligada por padrão, lendo uma tabela
     // que ninguém nunca preencheu — e o efeito não era silêncio: era o agente

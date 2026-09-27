@@ -26,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import { test, expect, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { carregarEnvLocal } from "../../scripts/lib/env-de-teste";
+import { PESOS_PADRAO } from "@/lib/prospecting/score";
 
 const APP_URL = `http://localhost:${process.env.E2E_PORT ?? "3001"}`;
 const CREDS_PATH = path.join(process.cwd(), ".e2e-creds.json");
@@ -408,22 +409,24 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
 
 /**
  * E2E de T17 (`.specs/features/prospeccao-nichos-e-enriquecimento/`) —
- * jornada completa: criar nicho pelo wizard (T13) → rodar busca escolhendo
- * esse nicho (T14) → ver resultado reprovado nos requisitos escondido por
- * padrão e revelado pelo chip → abrir a ficha (T15), ver os 6 blocos
- * incluindo um "ainda não consultado" (vazio) e um "não encontrado" (rodou,
- * não achou) → editar o nicho → confirmar que a busca antiga não mudou.
+ * jornada completa: nicho já cadastrado (sessão seguinte: cadastro de nicho
+ * REMOVIDO — não há mais wizard nem tela própria, só o casamento por nome na
+ * busca e o botão "Salvar como nicho" na tela de resultados) → rodar busca
+ * ligada a esse nicho → ver o aviso "Usando critérios de X" → ver resultado
+ * reprovado nos requisitos escondido por padrão e revelado pelo chip → abrir
+ * a ficha (T15), ver os 6 blocos incluindo um "ainda não consultado" (vazio)
+ * e um "não encontrado" (rodou, não achou).
  *
  * Mesma ressalva da spec original: Places/Apify/Receita continuam mockados —
- * a busca em si é seedada direto no banco (bypassa a Places API real), só a
- * criação/edição do NICHO (que não depende de API externa nenhuma) roda pela
- * UI de verdade, exercitando o wizard e a ficha ponta a ponta.
+ * a busca em si é seedada direto no banco (bypassa a Places API real). O
+ * nicho também é seedado direto (não tem mais UI de cadastro pra exercitar);
+ * a ficha roda pela UI de verdade.
  */
 test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () => {
   test.setTimeout(120_000);
   test.use({ actionTimeout: 10_000 });
 
-  test("cria nicho pelo wizard, busca, reprovado escondido/revelado, ficha com 6 blocos, editar não muda busca antiga", async ({
+  test("nicho seedado, busca ligada a ele mostra aviso, reprovado escondido/revelado, ficha com 6 blocos", async ({
     page,
   }) => {
     let nicheId: string | undefined;
@@ -455,37 +458,30 @@ test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () 
 
       await login(page, managerEmail);
 
-      // ═══ Step 1: cria o nicho pelo wizard (T13) ═══
+      // ═══ Step 1: nicho seedado direto (não há mais UI de cadastro) ═══
+      //
+      // Mínimo de 5 avaliações — o place "reprovado" seedado abaixo tem
+      // menos que isso de propósito. `weights` usa o mesmo padrão que o
+      // banner "Salvar como nicho" grava (`PESOS_PADRAO`), pra não divergir
+      // do caminho real de criação.
 
-      await page.goto(`${APP_URL}/app/prospeccao/nichos`);
-      await expect(page.getByRole("heading", { name: "Nichos de prospecção" })).toBeVisible();
-      await page.getByTestId("niche-novo").click();
-
-      await page.getByLabel("Nome do nicho").fill(nicheName);
-      await page
-        .getByLabel("Como esse cliente aparece no Google Maps (um termo por linha)")
-        .fill(`clínica e2e ${ts}`);
-      await page.getByRole("button", { name: "Próximo" }).click(); // negócio -> tamanho
-
-      // Mínimo de 5 avaliações — o place "reprovado" seedado abaixo tem menos que isso de propósito.
-      await page.getByLabel("Mínimo de avaliações no Google").fill("5");
-      await page.getByRole("button", { name: "Próximo" }).click(); // tamanho -> pesos
-
-      // Pesos padrão sugeridos já somam 100 — segue direto pra revisão.
-      await page.getByRole("button", { name: "Próximo" }).click(); // pesos -> revisão
-
-      const [criarResponse] = await Promise.all([
-        page.waitForResponse(
-          (r) => r.url().includes("/api/v1/prospecting/niches") && r.request().method() === "POST",
-        ),
-        page.getByRole("button", { name: "Salvar nicho" }).click(),
-      ]);
-      const criarBody = (await criarResponse.json()) as { data: { id: string } };
-      nicheId = criarBody.data.id;
+      const { data: nicheData, error: nicheError } = await admin
+        .from("prospecting_niches")
+        .insert({
+          organization_id: orgId,
+          name: nicheName,
+          search_terms: [nicheName],
+          requirements: { avaliacoesMin: 5 },
+          weights: PESOS_PADRAO,
+          created_by: managerId,
+        })
+        .select("id")
+        .single();
+      if (nicheError || !nicheData) {
+        throw new Error(`Falha ao seed nicho: ${nicheError?.message}`);
+      }
+      nicheId = (nicheData as { id: string }).id;
       expect(nicheId).toBeTruthy();
-
-      // Wizard fecha, volta pra lista, e o nicho novo aparece nela.
-      await expect(page.getByText(nicheName)).toBeVisible({ timeout: 10_000 });
 
       // ═══ Step 2: seed da busca + 2 resultados (bypassa a Places API real) ═══
       //
@@ -573,9 +569,10 @@ test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () 
       ]);
       if (placesError) throw new Error(`Falha ao seed places: ${placesError.message}`);
 
-      // ═══ Step 3: resultado reprovado escondido por padrão, chip revela ═══
+      // ═══ Step 3: aviso de nicho usado + reprovado escondido por padrão, chip revela ═══
 
       await page.goto(`${APP_URL}/app/prospeccao/${searchId}`);
+      await expect(page.getByTestId("prospeccao-nicho-usado")).toContainText(nicheName);
       const linhas = page.locator('[data-testid="prospeccao-linha"]');
       await expect(linhas).toHaveCount(1);
       await expect(page.getByText(`Clínica Aprovada ${ts}`)).toBeVisible();
@@ -609,52 +606,6 @@ test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () 
       );
       // Site: done, com achado -> mostra os indicadores, não um estado vazio.
       await expect(page.getByTestId("ficha-bloco-site")).toContainText("Abrir site");
-
-      // ═══ Step 5: edita o nicho — muda o nome ═══
-
-      await page.goto(`${APP_URL}/app/prospeccao/nichos`);
-      const nicheEditedName = `${nicheName} — editado`;
-      await page
-        .locator("li", { hasText: nicheName })
-        .getByRole("button", { name: "Editar" })
-        .click();
-      const nameInput = page.getByLabel("Nome do nicho");
-      await expect(nameInput).toHaveValue(nicheName);
-      await nameInput.fill(nicheEditedName);
-
-      // "Salvar nicho" só existe no passo "revisão" — precisa avançar os
-      // outros 3 passos de novo (mesmo caminho da criação), mesmo editando.
-      await page.getByRole("button", { name: "Próximo" }).click(); // negocio -> tamanho
-      await page.getByRole("button", { name: "Próximo" }).click(); // tamanho -> pesos
-      await page.getByRole("button", { name: "Próximo" }).click(); // pesos -> revisão
-
-      await Promise.all([
-        page.waitForResponse(
-          (r) => r.url().includes(`/api/v1/prospecting/niches/${nicheId}`) && r.request().method() === "PATCH",
-        ),
-        page.getByRole("button", { name: "Salvar nicho" }).click(),
-      ]);
-      await expect(page.getByText(nicheEditedName)).toBeVisible({ timeout: 10_000 });
-
-      // ═══ Step 6: a busca ANTIGA não mudou (snapshot doctrine, design.md) ═══
-
-      const { data: placeAAfterEdit } = await admin
-        .from("prospected_places")
-        .select("score_initial, score_final, status_label")
-        .eq("id", placeAId)
-        .maybeSingle();
-      expect(placeAAfterEdit?.score_initial).toBe(80);
-      expect(placeAAfterEdit?.score_final).toBe(80);
-      expect(placeAAfterEdit?.status_label).toBe("oportunidade");
-
-      const { data: searchAfterEdit } = await admin
-        .from("prospected_searches")
-        .select("service_type")
-        .eq("id", searchId)
-        .maybeSingle();
-      // CÓPIA do service_type do nicho no momento da busca — editar o nicho
-      // depois não reescreve este campo (design.md, "Data Models").
-      expect(searchAfterEdit?.service_type).toBe("venda de site");
     } finally {
       // ═══ Cleanup ═══
       try {
