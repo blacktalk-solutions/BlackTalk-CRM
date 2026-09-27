@@ -293,6 +293,29 @@ const schema = z.object({
   GOOGLE_CALENDAR_CLIENT_ID: z.string().optional().default(""),
   GOOGLE_CALENDAR_CLIENT_SECRET: z.string().optional().default(""),
 
+  // Places API (New) — usada por `lib/prospecting/places-client.ts` (busca de
+  // estabelecimentos pra prospecção de leads via Google Maps). Opcional: é
+  // feature nova, ainda não exigida pro app subir. Sem a chave, o client lança
+  // `PlacesApiError({ code: "missing_api_key" })` só quando a busca é
+  // efetivamente chamada — nunca no boot. Gerar em console.cloud.google.com >
+  // APIs e Serviços > Credenciais, com a "Places API (New)" habilitada no
+  // projeto e billing ativo (a API cobra por SKU, conforme os campos pedidos).
+  GOOGLE_PLACES_API_KEY: z.string().optional().default(""),
+
+  // Apify — usada por `lib/prospecting/{apify-client,pesquisa-client}.ts`
+  // (T5/T6 de `.specs/features/prospeccao-nichos-e-enriquecimento/`):
+  // leitura de perfil de Instagram (`apify~instagram-profile-scraper`) e
+  // pesquisa no Google pra achar o que o site não divulgou
+  // (`apify~google-search-scraper`), mesmos dois atores do
+  // `prospeccao-kit-aluno`. Opcional, mesmo padrão de `ANTHROPIC_API_KEY`/
+  // `OPENAI_API_KEY` acima — doutrina de self-host: instalação existente sem
+  // esta chave não pode quebrar. Sem ela, o `instagram-worker` marca
+  // `instagram_status='not_applicable'` direto, sem tentar (T9/T10), e a UI
+  // do nicho avisa que o peso de Instagram fica sem efeito até configurar
+  // (T13) — nunca bloqueia criar/editar nicho nem subir o app. Gerar em
+  // console.apify.com/settings/integrations.
+  APIFY_TOKEN: z.string().optional().default(""),
+
   // Nuvemshop — opcional (template genérico open-source). Só exigidas quando
   // NUVEMSHOP_ENABLED=true; o runtime já degrada via getConfig()==null.
   NUVEMSHOP_APP_ID: z.string().optional().default(""),

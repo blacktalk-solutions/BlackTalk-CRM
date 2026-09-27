@@ -101,6 +101,19 @@ export const ApiErrorCodes = {
   waha_error: "waha_error",
   ai_provider_error: "ai_provider_error",
   nuvemshop_error: "nuvemshop_error",
+
+  // ─── PROSPECÇÃO, busca na Google Places API (0234) ───
+  //
+  // Mesmo motivo dos códigos `ads_*` acima: `fail()` aceita `(string & {})`,
+  // e um código inventado no call site vira contrato de wire sem passar por
+  // lista nenhuma. Os quatro valores são repassados LITERALMENTE de
+  // `PlacesApiError.code` (lib/prospecting/places-client.ts) — a taxonomia
+  // já existe lá, declará-la aqui de novo com outro nome só criaria duas
+  // fontes de verdade para o mesmo erro.
+  missing_api_key: "missing_api_key",
+  invalid_api_key_or_billing: "invalid_api_key_or_billing",
+  quota_exceeded: "quota_exceeded",
+  unknown_error: "unknown_error",
 } as const;
 
 export type ApiErrorCode = (typeof ApiErrorCodes)[keyof typeof ApiErrorCodes];

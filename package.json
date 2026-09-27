@@ -33,10 +33,12 @@
     "gov:verify": "pnpm typecheck && pnpm lint && pnpm lint:channels && pnpm lint:role-rank && pnpm test:unit",
     "worker": "tsx --env-file=.env --env-file=.env.local workers/agent-worker/main.ts",
     "dev:crons": "tsx --env-file=.env --env-file=.env.local scripts/dev-crons.ts",
+    "dev:prospeccao-worker": "tsx --env-file=.env --env-file=.env.local scripts/dev-prospeccao-worker.ts",
     "flywheel:judge": "tsx --env-file=.env --env-file=.env.local scripts/flywheel-judge-live.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",
+    "playwright": "^1.62.1",
     "@ai-sdk/google": "^4.0.18",
     "@ai-sdk/openai": "^4.0.56",
     "@emoji-mart/data": "^1.2.1",

@@ -89,6 +89,11 @@ export {
   // conversation
   ChatCircle,
   Phone,
+  Envelope,
+  // ficha de prospecção (T15, blocos Instagram/Venda)
+  InstagramLogo,
+  CurrencyDollar,
+  Star,
   Paperclip,
   Microphone,
   Image as ImageIcon,

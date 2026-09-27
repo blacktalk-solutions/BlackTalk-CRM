@@ -300,6 +300,16 @@ jobs:
         lote-no-quadro-do-funil.spec.ts
         importar-leads-planilha.spec.ts
         relatorio-de-atividades.spec.ts
+        prospeccao.spec.ts
+      # `prospeccao.spec.ts` (feature de prospecção via Google Maps + nichos e
+      # enriquecimento) entrou aqui em 2026-09-25 — achado por
+      # `e2e-cobertura-completa.test.ts` ao vermelho: a spec existia desde a
+      # feature original e nunca tinha sido registrada em lista nenhuma, então
+      # nunca rodou no CI. Sem WAHA/Redis/Resend/Nuvemshop (as duas suítes só
+      # usam `@supabase/supabase-js` direto pra seed + Playwright pela tela) —
+      # elegível pra PARTE_1 pela mesma régua das demais. Cada `test()` semeia
+      # e limpa os próprios dados (organização `e2e-test-org` do seed padrão +
+      # UUIDs com sufixo de timestamp), sem tocar fixture de spec vizinha.
       # ⚠️ A ORDEM DESTA LISTA NÃO DECIDE A ORDEM DE EXECUÇÃO. O Playwright
       # ordena os arquivos por CAMINHO, não pela ordem em que são passados na
       # linha de comando. Medido no run 31838253496: `marca-logo.spec.ts` estava

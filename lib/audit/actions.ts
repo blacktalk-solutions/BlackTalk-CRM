@@ -461,6 +461,34 @@ export const AUDIT_ACTIONS = [
   "crm_task.updated",
   "crm_task.deleted",
   "organization.switched",
+
+  // Prospecção via Google Maps (T4, migration 0234): a busca disparada é
+  // mutação (custa chamada paga à Places API e grava `prospected_searches` +
+  // N `prospected_places`) — "quem gastou a cota da Google e quando" só tem
+  // resposta nesta trilha.
+  "prospecting.search_run",
+
+  // Prospecção: retry manual de análise (T11). Uma linha já analisada que
+  // falhou é retentada — "quem acionou a rearrumação e quando" é rastreável.
+  "prospecting.place_reanalyze",
+
+  // Prospecção: promoção para o funil (T12). Um resultado de prospeccão
+  // torna-se lead — "quem alimentou o funil com este contato e quando" é
+  // rastreável. Auditável porque gera contact/lead e consumo de quota.
+  "prospecting.place_promoted",
+
+  // Prospecção — nichos configuráveis (T7, `.specs/features/prospeccao-nichos-e-enriquecimento/`):
+  // criar/editar um nicho muda o critério (pesos/requisitos) que toda busca
+  // futura da organização vai usar — "quem mudou o critério e quando" é
+  // rastreável, mesma classe de mutação de `prospecting.search_run`.
+  "prospecting.niche_created",
+  "prospecting.niche_updated",
+
+  // Prospecção — ficha avançada (migration 0238): gerar a "venda que cabe"
+  // por IA custa dinheiro por chamada e é gatilho MANUAL (nunca automático
+  // por resultado) — "quem pediu a geração e quando" é rastreável, mesma
+  // classe de mutação de `prospecting.place_reanalyze`.
+  "prospecting.place_pitch_generate",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

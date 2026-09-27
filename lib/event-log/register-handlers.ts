@@ -20,6 +20,10 @@ import { mediaPersistHandler } from "@/workers/media-persist-worker.handler";
 import { mediaDeriveHandler } from "@/workers/media-derive-worker.handler";
 import { webPushInboundHandler } from "@/lib/notifications/push.handler";
 import { conversaoDeVendaHandler } from "@/lib/conversoes/envio.handler";
+import { prospectingSiteQualityHandler } from "@/workers/prospecting-site-quality-worker.handler";
+import { prospectingCnpjHandler } from "@/workers/prospecting-cnpj-worker.handler";
+import { prospectingInstagramHandler } from "@/workers/prospecting-instagram-worker.handler";
+import { prospectingPitchHandler } from "@/workers/prospecting-pitch-worker.handler";
 import { registerHandler } from "@/lib/event-log/dispatcher";
 
 let _registered = false;
@@ -42,6 +46,10 @@ export function ensureHandlersRegistered(): void {
   registerHandler(mediaPersistHandler);
   registerHandler(mediaDeriveHandler);
   registerHandler(webPushInboundHandler);
+  registerHandler(prospectingSiteQualityHandler);
+  registerHandler(prospectingCnpjHandler);
+  registerHandler(prospectingInstagramHandler);
+  registerHandler(prospectingPitchHandler);
   // Por último: reportar a venda ao anúncio é o consumidor mais externo do
   // fechamento — depende de rede de terceiro e não pode atrasar quem escreve
   // no banco. Falha dele nunca segura os handlers acima.

@@ -23314,6 +23314,223 @@ update public.channel_sessions
 
 notify pgrst,'reload schema';
 
+-- ---- prospecção via Google Maps: prospected_searches + prospected_places (migration 0234) ----
+-- Fundação (T1) da feature em .specs/features/prospeccao-google-maps/. Só
+-- schema — ver o cabeçalho da migration 0234 para o raciocínio completo
+-- (por que tabelas novas em vez de estender contacts/crm_leads, por que
+-- organization_id denormalizado em prospected_places, por que os CHECKs de
+-- status_label/site_analysis_status e por que a policy fica sem gate de
+-- papel — RBAC fino vive na rota, não no RLS).
+--
+-- Prova comportamental cross-tenant fica para a T10 do plano
+-- (tests/invariants/prospecting.test.ts, depende de T1+T4+T8): até lá, a
+-- varredura de completude de RLS acusa as duas tabelas como "sem prova" —
+-- esperado, não defeito desta migration.
+--
+-- `requested_by` é NOT NULL e fica SEM `on delete cascade` de propósito:
+-- apagar o `auth.users` de quem pediu a busca não pode arrastar em silêncio
+-- todo o histórico de negócio da organização (anti-pattern 7 do CLAUDE.md,
+-- "cascade fantasma"). NO ACTION (default) bloqueia o delete em vez disso.
+
+create table if not exists public.prospected_searches (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  business_type text not null,
+  location text not null,
+  service_type text not null default 'venda_de_site',
+  requested_by uuid not null references auth.users(id),
+  result_count integer not null default 0,
+  -- true quando a busca bateu no teto de 60 resultados da Places API (New).
+  places_api_capped boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.prospected_places (
+  id uuid primary key default gen_random_uuid(),
+  search_id uuid not null references public.prospected_searches(id) on delete cascade,
+  -- Denormalizado: mesmo padrão de crm_leads (RLS direto, sem join até a busca).
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  place_id text not null, -- id da Google (Places API)
+  name text not null,
+  address text,
+  phone_number text,
+  phone_number_normalized text, -- E.164, para o link wa.me
+  website_url text,
+  rating numeric,
+  review_count integer,
+  score_initial integer not null,
+  score_final integer, -- null até P2 terminar (ou até sempre, se não há site)
+  status_label text not null, -- recalculado quando score_final chega
+  site_analysis_status text not null default 'not_applicable',
+  site_analysis_result jsonb, -- { reachable, mobileResponsive, loadTimeMs, error? }
+  email text,
+  promoted_lead_id uuid references public.crm_leads(id) on delete set null,
+  promoted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint prospected_places_status_label_check
+    check (status_label in ('quente', 'oportunidade', 'baixa')),
+  constraint prospected_places_site_analysis_status_check
+    check (site_analysis_status in ('not_applicable', 'pending', 'processing', 'done', 'failed')),
+
+  unique (organization_id, search_id, place_id)
+);
+
+create index if not exists idx_prospected_searches_org_created
+  on public.prospected_searches (organization_id, created_at desc);
+
+create index if not exists idx_prospected_places_search_id
+  on public.prospected_places (search_id);
+
+alter table public.prospected_searches enable row level security;
+alter table public.prospected_places enable row level security;
+
+drop policy if exists tenant_isolation_prospected_searches_all on public.prospected_searches;
+create policy tenant_isolation_prospected_searches_all on public.prospected_searches
+  for all
+  using (organization_id in (select public.fn_user_org_ids()))
+  with check (organization_id in (select public.fn_user_org_ids()));
+
+drop policy if exists tenant_isolation_prospected_places_all on public.prospected_places;
+create policy tenant_isolation_prospected_places_all on public.prospected_places
+  for all
+  using (organization_id in (select public.fn_user_org_ids()))
+  with check (organization_id in (select public.fn_user_org_ids()));
+
+revoke all on public.prospected_searches from anon;
+revoke all on public.prospected_places from anon;
+
+drop trigger if exists trg_prospected_places_updated_at on public.prospected_places;
+create trigger trg_prospected_places_updated_at
+  before update on public.prospected_places
+  for each row execute function public.fn_set_updated_at();
+
+comment on table public.prospected_searches is
+  'Uma execução de busca na Google Places API (New) — P1 da prospecção (design.md). 1:N com prospected_places.';
+comment on table public.prospected_places is
+  'Um resultado bruto de prospected_searches. Nunca lida pelo motor do CRM: só a promoção explícita (promoted_lead_id) liga uma linha a um crm_leads.';
+comment on column public.prospected_places.status_label is
+  'Derivado da fórmula de score (lib/prospecting/score.ts), armazenado (não calculado a cada leitura) porque muda de forma assíncrona — ver Nota DIRC em design.md.';
+comment on column public.prospected_places.site_analysis_status is
+  'not_applicable = sem website_url (nunca entra na fila do worker); pending/processing/done/failed = ciclo de vida de prospected-site-quality-worker (P2).';
+
+-- ---- prospected_places entra na publicação Realtime (migration 0235) ----
+-- Bloco próprio (não compartilhado com nenhum outro `do $$`) para que uma falha
+-- aqui nunca derrube uma correção não relacionada — e colocado DEPOIS da criação
+-- da tabela acima, ao contrário da tentativa original (revisão final pegou o erro
+-- de posicionamento: rodar isso antes do create table quebra instalação do zero).
+do $$ begin
+ if exists(select 1 from pg_publication where pubname='supabase_realtime') and not exists(
+  select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='prospected_places') then
+  alter publication supabase_realtime add table public.prospected_places;
+ end if;
+end $$;
+
+-- ---- nichos de prospecção configuráveis: prospecting_niches (migration 0236) ----
+-- Fundação (T1) de .specs/features/prospeccao-nichos-e-enriquecimento/ — ver o
+-- cabeçalho da migration 0236 para o raciocínio completo (por que tabela nova
+-- em vez de campo único na organização, por que weights/requirements em jsonb,
+-- por que niche_id sem cascade, por que requisitos_ok default true).
+
+create table if not exists public.prospecting_niches (
+  id                uuid primary key default gen_random_uuid(),
+  organization_id   uuid not null references public.organizations(id) on delete cascade,
+  name              text not null,
+  service_type      text not null,
+  search_terms      text[] not null,
+  requirements      jsonb not null default '{}'::jsonb,
+  weights           jsonb not null default '{}'::jsonb,
+  created_by        uuid not null references auth.users(id),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+create index if not exists idx_prospecting_niches_org
+  on public.prospecting_niches (organization_id, created_at desc);
+
+alter table public.prospecting_niches enable row level security;
+
+drop policy if exists tenant_isolation_prospecting_niches_all on public.prospecting_niches;
+create policy tenant_isolation_prospecting_niches_all on public.prospecting_niches
+  for all
+  using (organization_id in (select public.fn_user_org_ids()))
+  with check (organization_id in (select public.fn_user_org_ids()));
+
+revoke all on public.prospecting_niches from anon;
+
+drop trigger if exists trg_prospecting_niches_updated_at on public.prospecting_niches;
+create trigger trg_prospecting_niches_updated_at
+  before update on public.prospecting_niches
+  for each row execute function public.fn_set_updated_at();
+
+comment on table public.prospecting_niches is
+  'Critério configurável de prospecção por organização (termos, requisitos, pesos) — substitui o service_type fixo de 0234. 1:N com organizations.';
+
+alter table public.prospected_searches
+  add column if not exists niche_id uuid references public.prospecting_niches(id);
+
+comment on column public.prospected_searches.niche_id is
+  'Nicho escolhido para esta busca (0236). service_type continua sendo uma CÓPIA do service_type do nicho no momento da busca — não um join ao vivo.';
+
+alter table public.prospected_places
+  add column if not exists requisitos_ok      boolean not null default true,
+  add column if not exists motivo_requisitos  text;
+
+comment on column public.prospected_places.requisitos_ok is
+  'Passou nos requisitos do nicho da busca — default true trata linhas anteriores a esta migration como não reprovadas. Distinto de status_label.';
+
+-- ---- enriquecimento de prospecção: colunas de CNPJ e Instagram (migration 0237) ----
+-- T2 de .specs/features/prospeccao-nichos-e-enriquecimento/ — mesmo formato de
+-- site_analysis_status/site_analysis_result (0234), um trio (data/status/
+-- consultado_em) por trilho assíncrono novo. Ver o cabeçalho da migration
+-- 0237 para o raciocínio completo.
+
+alter table public.prospected_places
+  add column if not exists cnpj_data             jsonb,
+  add column if not exists cnpj_status            text not null default 'not_applicable',
+  add column if not exists cnpj_consultado_em     timestamptz,
+  add column if not exists instagram_data         jsonb,
+  add column if not exists instagram_status       text not null default 'not_applicable',
+  add column if not exists instagram_consultado_em timestamptz;
+
+alter table public.prospected_places
+  drop constraint if exists prospected_places_cnpj_status_check,
+  add constraint prospected_places_cnpj_status_check
+    check (cnpj_status in ('not_applicable', 'pending', 'processing', 'done', 'failed'));
+
+alter table public.prospected_places
+  drop constraint if exists prospected_places_instagram_status_check,
+  add constraint prospected_places_instagram_status_check
+    check (instagram_status in ('not_applicable', 'pending', 'processing', 'done', 'failed'));
+
+comment on column public.prospected_places.cnpj_status is
+  'not_applicable = ainda não pedido; pending/processing/done/failed = ciclo de vida de prospecting-cnpj-worker (T9). Mesmos 5 valores de site_analysis_status.';
+comment on column public.prospected_places.instagram_status is
+  'not_applicable = nicho sem peso de Instagram, ou APIFY_TOKEN ausente; pending/processing/done/failed = ciclo de vida de prospecting-instagram-worker (T10).';
+
+-- ---- ficha de prospecção avançada: coordenadas do Maps + pitch de venda por IA (migration 0238) ----
+-- Ver o cabeçalho da migration 0238 para o raciocínio completo (por que
+-- lat/lng/google_maps_url não custam SKU extra, por que oportunidade_pitch_*
+-- é gatilho MANUAL em vez de promovido em massa pela busca).
+
+alter table public.prospected_places
+  add column if not exists lat                          numeric,
+  add column if not exists lng                           numeric,
+  add column if not exists google_maps_url               text,
+  add column if not exists oportunidade_pitch_status     text not null default 'not_applicable',
+  add column if not exists justificativa_oportunidade    text,
+  add column if not exists abordagem_instagram           text,
+  add column if not exists oportunidade_pitch_gerado_em  timestamptz;
+
+alter table public.prospected_places
+  drop constraint if exists prospected_places_oportunidade_pitch_status_check,
+  add constraint prospected_places_oportunidade_pitch_status_check
+    check (oportunidade_pitch_status in ('not_applicable', 'pending', 'processing', 'done', 'failed'));
+
+comment on column public.prospected_places.oportunidade_pitch_status is
+  'not_applicable = ninguém pediu ainda (gatilho MANUAL, ver app/api/v1/prospecting/places/[placeId]/pitch/route.ts); pending/processing/done/failed = ciclo de vida do worker de pitch. Mesmos 5 valores de site_analysis_status.';
+
 -- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
 --
 -- ⚠️ ESTE BLOCO É, DE PROPÓSITO, O ÚLTIMO DO ARQUIVO. Apêndice novo entra ANTES
