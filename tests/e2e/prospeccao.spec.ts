@@ -293,13 +293,19 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
 
       // ═══ Step 6: Clica no link e valida que navega pro lead ═══
 
+      // `/app/leads/:id` é só a PORTA — o servidor redireciona sempre pro
+      // pipeline dono do lead, com `?lead=:id` de query (nunca fica parado em
+      // `/app/leads/:id`, então esperar por essa URL é esperar por um estado
+      // que o app nunca mostra: passava por sorte de timing, falhando cedo ou
+      // tarde dependendo de quão rápido o redirect do servidor terminava).
+      const urlDoLeadNoFunil = new RegExp(`/app/pipelines/.*[?&]lead=${leadId}`);
       await Promise.all([
-        page.waitForURL(`/app/leads/${leadId}`),
+        page.waitForURL(urlDoLeadNoFunil),
         linkNoFunil.click(),
       ]);
 
       // Verifica que estamos na página do lead (kanban ou detalhe)
-      await expect(page).toHaveURL(new RegExp(`/app/leads/${leadId}`));
+      await expect(page).toHaveURL(urlDoLeadNoFunil);
 
       // Verifica que o lead foi criado com o nome do lugar
       // O deep link abre o painel de detalhe SOBRE o kanban: o nome aparece
