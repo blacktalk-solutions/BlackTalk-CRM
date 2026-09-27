@@ -192,7 +192,6 @@ export interface ProspectedSearchRow {
   business_type: string;
   location: string;
   service_type: string;
-  niche_id: string | null;
   result_count: number;
   places_api_capped: boolean;
   created_at: string;
@@ -204,8 +203,6 @@ export interface ProspectedSearchDTO {
   businessType: string;
   location: string;
   serviceType: string;
-  /** `null` = busca ad-hoc, sem nicho vinculado (0239) — a tela de resultados usa isto pra oferecer "salvar como nicho". */
-  nicheId: string | null;
   resultCount: number;
   placesApiCapped: boolean;
   createdAt: string;
@@ -217,7 +214,6 @@ export function toSearchDTO(row: ProspectedSearchRow): ProspectedSearchDTO {
     businessType: row.business_type,
     location: row.location,
     serviceType: row.service_type,
-    nicheId: row.niche_id,
     resultCount: row.result_count,
     placesApiCapped: row.places_api_capped,
     createdAt: row.created_at,
@@ -225,7 +221,7 @@ export function toSearchDTO(row: ProspectedSearchRow): ProspectedSearchDTO {
 }
 
 export const SEARCH_SELECT_COLUNAS =
-  "id, business_type, location, service_type, niche_id, result_count, places_api_capped, created_at";
+  "id, business_type, location, service_type, result_count, places_api_capped, created_at";
 
 export async function POST(req: NextRequest): Promise<Response> {
   const supportDenied = await requireSupportWrite();

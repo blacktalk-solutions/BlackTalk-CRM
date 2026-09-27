@@ -409,24 +409,26 @@ test.describe("prospeccao — fluxo completo via Google Maps", () => {
 
 /**
  * E2E de T17 (`.specs/features/prospeccao-nichos-e-enriquecimento/`) —
- * jornada completa: nicho já cadastrado (sessão seguinte: cadastro de nicho
- * REMOVIDO — não há mais wizard nem tela própria, só o casamento por nome na
- * busca e o botão "Salvar como nicho" na tela de resultados) → rodar busca
- * ligada a esse nicho → ver o aviso "Usando critérios de X" → ver resultado
+ * jornada completa: nicho já cadastrado (sessão seguinte à remoção do
+ * cadastro: não há mais wizard nem tela própria, só o casamento por nome
+ * silencioso na busca — sem texto/botão que nomeie "nicho" pro usuário, pois
+ * o produto está migrando pra um diagnóstico automático que substitui esse
+ * conceito inteiro) → rodar busca ligada a esse nicho → ver resultado
  * reprovado nos requisitos escondido por padrão e revelado pelo chip → abrir
  * a ficha (T15), ver os 6 blocos incluindo um "ainda não consultado" (vazio)
  * e um "não encontrado" (rodou, não achou).
  *
  * Mesma ressalva da spec original: Places/Apify/Receita continuam mockados —
  * a busca em si é seedada direto no banco (bypassa a Places API real). O
- * nicho também é seedado direto (não tem mais UI de cadastro pra exercitar);
- * a ficha roda pela UI de verdade.
+ * nicho também é seedado direto (não tem mais UI de cadastro pra exercitar,
+ * nem aviso visível de que foi usado — só a pontuação por baixo, que segue
+ * rodando); a ficha roda pela UI de verdade.
  */
 test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () => {
   test.setTimeout(120_000);
   test.use({ actionTimeout: 10_000 });
 
-  test("nicho seedado, busca ligada a ele mostra aviso, reprovado escondido/revelado, ficha com 6 blocos", async ({
+  test("nicho seedado, busca ligada a ele em silêncio, reprovado escondido/revelado, ficha com 6 blocos", async ({
     page,
   }) => {
     let nicheId: string | undefined;
@@ -461,9 +463,9 @@ test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () 
       // ═══ Step 1: nicho seedado direto (não há mais UI de cadastro) ═══
       //
       // Mínimo de 5 avaliações — o place "reprovado" seedado abaixo tem
-      // menos que isso de propósito. `weights` usa o mesmo padrão que o
-      // banner "Salvar como nicho" grava (`PESOS_PADRAO`), pra não divergir
-      // do caminho real de criação.
+      // menos que isso de propósito. `weights` usa o mesmo padrão
+      // (`PESOS_PADRAO`) de qualquer nicho criado hoje, pra não divergir do
+      // caminho real de criação.
 
       const { data: nicheData, error: nicheError } = await admin
         .from("prospecting_niches")
@@ -569,10 +571,13 @@ test.describe("prospeccao — nichos configuráveis e enriquecimento (T17)", () 
       ]);
       if (placesError) throw new Error(`Falha ao seed places: ${placesError.message}`);
 
-      // ═══ Step 3: aviso de nicho usado + reprovado escondido por padrão, chip revela ═══
+      // ═══ Step 3: reprovado escondido por padrão, chip revela ═══
+      //
+      // Nenhum aviso de nicho na tela — a busca usa os critérios em silêncio
+      // (decisão da sessão que removeu o cadastro: "nicho" não é mais
+      // conceito visível ao usuário).
 
       await page.goto(`${APP_URL}/app/prospeccao/${searchId}`);
-      await expect(page.getByTestId("prospeccao-nicho-usado")).toContainText(nicheName);
       const linhas = page.locator('[data-testid="prospeccao-linha"]');
       await expect(linhas).toHaveCount(1);
       await expect(page.getByText(`Clínica Aprovada ${ts}`)).toBeVisible();

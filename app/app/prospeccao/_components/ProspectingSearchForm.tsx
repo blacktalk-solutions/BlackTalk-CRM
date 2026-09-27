@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -33,15 +33,14 @@ const MAX_SUGESTOES = 8;
  *
  * "Tipo de negócio" é o próprio campo de nicho: `nichoCasado` é DERIVADO do
  * texto digitado (casamento exato, sem acento/maiúscula) contra os nichos já
- * salvos — funciona tanto escolhendo uma sugestão do autocomplete quanto só
- * digitando o nome igual, sem tocar no dropdown (achado pedido: "mesmo assim
- * o usuário não clicar no autocomplete e já existir, o sistema avisa"). Não
- * há mais tela de cadastro: um nicho só nasce pelo botão "Salvar como nicho"
- * na tela de resultados (`ProspectingResultsHeader`), com pesos padrão fixos
- * — nada aqui pergunta peso/requisito, e não vai perguntar: a Fase 2 (PRD do
- * diagnóstico completo) deve substituir esse sistema de pesos por algo que
- * avalia todo sinal pra qualquer resultado, então não vale investir em mais
- * UI de configuração numa peça com prazo de validade.
+ * salvos, e aplicado em SILÊNCIO — sem texto de "usando critérios de X" nem
+ * jeito de recusar. Sessão seguinte à que introduziu esse aviso: o produto
+ * está migrando pra um diagnóstico automático (varre tudo, gera HTML de
+ * sugestão), e "nicho"/"critério" como conceito visível ao usuário deixou de
+ * fazer sentido — o autocomplete (sugestão de termo já usado) continua,
+ * porque não nomeia "nicho" nenhum, só facilita digitar de novo. O
+ * casamento em si (pontuação por peso) segue rodando por baixo até a Fase 2
+ * substituir esse mecanismo inteiro.
  *
  * Ao submeter, chama `POST /api/v1/prospecting/searches` e navega pro
  * detalhe da busca — `app/app/prospeccao/[searchId]/page.tsx` é quem
@@ -58,15 +57,8 @@ export function ProspectingSearchForm({ niches }: Props) {
   const [businessType, setBusinessType] = useState("");
   const [location, setLocation] = useState("");
   const [sugestoesAbertas, setSugestoesAbertas] = useState(false);
-  // Some quando o texto muda de novo — reescrever quebra o casamento
-  // automático de propósito, então "ignorar" não precisa sobreviver a isso.
-  const [nichoIgnorado, setNichoIgnorado] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-
-  useEffect(() => {
-    setNichoIgnorado(false);
-  }, [businessType]);
 
   const normalizado = (s: string) => s.trim().toLowerCase();
 
@@ -76,8 +68,6 @@ export function ProspectingSearchForm({ niches }: Props) {
     return niches.find((n) => normalizado(n.name) === alvo) ?? null;
   }, [businessType, niches]);
 
-  const nichoAplicado = nichoIgnorado ? null : nichoCasado;
-
   const sugestoes = useMemo(() => {
     const termo = normalizado(businessType);
     if (!termo) return [];
@@ -86,7 +76,6 @@ export function ProspectingSearchForm({ niches }: Props) {
 
   function escolherNicho(niche: NicheDTO) {
     setBusinessType(niche.name);
-    setNichoIgnorado(false);
     setSugestoesAbertas(false);
   }
 
@@ -103,7 +92,7 @@ export function ProspectingSearchForm({ niches }: Props) {
         body: JSON.stringify({
           businessType: businessType.trim(),
           location: location.trim(),
-          ...(nichoAplicado ? { nicheId: nichoAplicado.id } : {}),
+          ...(nichoCasado ? { nicheId: nichoCasado.id } : {}),
         }),
       });
       const json = (await res.json()) as SearchApiSuccess | SearchApiError;
@@ -164,30 +153,6 @@ export function ProspectingSearchForm({ niches }: Props) {
                     </li>
                   ))}
                 </ul>
-              ) : null}
-              {nichoCasado ? (
-                <p className="text-xs text-muted-foreground" data-testid="prospeccao-nicho-casado">
-                  {nichoAplicado ? (
-                    <>
-                      {t("Usando critérios de")} <strong>{nichoCasado.name}</strong>.{" "}
-                      <button
-                        type="button"
-                        className="underline underline-offset-2"
-                        onClick={() => setNichoIgnorado(true)}
-                      >
-                        {t("Buscar sem eles")}
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      className="underline underline-offset-2"
-                      onClick={() => setNichoIgnorado(false)}
-                    >
-                      {t("Usar critérios de")} {nichoCasado.name}
-                    </button>
-                  )}
-                </p>
               ) : null}
             </div>
 
