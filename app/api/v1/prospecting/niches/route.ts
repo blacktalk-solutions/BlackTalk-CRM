@@ -36,7 +36,7 @@ const TOLERANCIA_SOMA = 0.01;
 export interface NicheRow {
   id: string;
   name: string;
-  service_type: string;
+  service_type: string | null;
   search_terms: string[];
   requirements: Record<string, unknown>;
   weights: Record<string, unknown>;
@@ -48,7 +48,8 @@ export interface NicheRow {
 export interface NicheDTO {
   id: string;
   name: string;
-  serviceType: string;
+  /** 0239: deixou de ser coletado — nichos antigos podem ter valor, novos não. */
+  serviceType: string | null;
   searchTerms: string[];
   requirements: Record<string, unknown>;
   weights: Record<string, unknown>;
@@ -124,7 +125,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .insert({
       organization_id: org.orgId,
       name: input.name,
-      service_type: input.serviceType,
+      service_type: input.serviceType ?? null,
       search_terms: input.searchTerms,
       requirements: input.requirements,
       weights: input.weights,

@@ -14,24 +14,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/hooks/i18n/useT";
 import { Warning } from "@/lib/ui/icons";
 import { prospectingNicheCreateSchema, type ProspectingNicheCreateInput } from "@/lib/schemas/prospecting";
+import { PESOS_PADRAO } from "@/lib/prospecting/score";
 import type { NicheDTO } from "@/app/api/v1/prospecting/niches/route";
-
-/**
- * Pesos sugeridos — mesmo `PESOS_PADRAO` do `prospeccao-kit-aluno`
- * (`lib/score.mjs`), validado por semanas de uso real antes desta feature
- * (design.md, "Tech Decisions"). Soma 100.
- */
-const PESOS_SUGERIDOS: ProspectingNicheCreateInput["weights"] = {
-  site: 25,
-  instagram: 15,
-  email: 15,
-  telefone: 10,
-  whatsapp: 10,
-  reputacao: 10,
-  cnpj: 5,
-  linkedin: 5,
-  endereco: 5,
-};
 
 /** Rótulo de cada peso, na mesma ordem/nomenclatura do kit (`docs/a-regua-do-score.md`). */
 const CAMPOS_DE_PESO: Array<{ key: keyof ProspectingNicheCreateInput["weights"]; label: string }> = [
@@ -58,7 +42,6 @@ const CAMPOS_DE_PESO: Array<{ key: keyof ProspectingNicheCreateInput["weights"];
  */
 const wizardFormSchema = z.object({
   name: z.string().min(1, "Dê um nome pro nicho."),
-  serviceType: z.string().min(1, "Diga o que você vende."),
   searchTermsText: z.string().min(1, "Pelo menos um termo de busca."),
   avaliacoesMin: z.string(),
   avaliacoesMax: z.string(),
@@ -79,11 +62,10 @@ const wizardFormSchema = z.object({
 type WizardFormValues = z.infer<typeof wizardFormSchema>;
 
 function nicheToFormValues(niche: NicheDTO | null): WizardFormValues {
-  const weights = (niche?.weights as ProspectingNicheCreateInput["weights"] | undefined) ?? PESOS_SUGERIDOS;
+  const weights = (niche?.weights as ProspectingNicheCreateInput["weights"] | undefined) ?? PESOS_PADRAO;
   const requirements = (niche?.requirements as ProspectingNicheCreateInput["requirements"] | undefined) ?? {};
   return {
     name: niche?.name ?? "",
-    serviceType: niche?.serviceType ?? "",
     searchTermsText: (niche?.searchTerms ?? []).join("\n"),
     avaliacoesMin: requirements.avaliacoesMin != null ? String(requirements.avaliacoesMin) : "",
     avaliacoesMax: requirements.avaliacoesMax != null ? String(requirements.avaliacoesMax) : "",
@@ -112,7 +94,6 @@ function numOrZero(v: string): number {
 function buildPayload(values: WizardFormValues): ProspectingNicheCreateInput {
   return {
     name: values.name.trim(),
-    serviceType: values.serviceType.trim(),
     searchTerms: values.searchTermsText
       .split("\n")
       .map((t) => t.trim())
@@ -190,7 +171,7 @@ export function NicheWizard({ niche, apifyTokenConfigured, onSaved, onCancel }: 
 
   async function avancar() {
     const camposDoPasso: Record<Passo, (keyof WizardFormValues)[]> = {
-      negocio: ["name", "serviceType", "searchTermsText"],
+      negocio: ["name", "searchTermsText"],
       tamanho: [],
       pesos: [],
       revisao: [],
@@ -286,18 +267,6 @@ export function NicheWizard({ niche, apifyTokenConfigured, onSaved, onCancel }: 
                   aria-invalid={!!errors.name}
                 />
                 {errors.name ? <p className="text-xs text-destructive">{t(errors.name.message ?? "")}</p> : null}
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="niche-service-type">{t("O que você vende para esse nicho")}</Label>
-                <Input
-                  id="niche-service-type"
-                  placeholder={t("Ex.: venda de site, tráfego pago, automação com IA…")}
-                  {...register("serviceType")}
-                  aria-invalid={!!errors.serviceType}
-                />
-                {errors.serviceType ? (
-                  <p className="text-xs text-destructive">{t(errors.serviceType.message ?? "")}</p>
-                ) : null}
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="niche-search-terms">{t("Como esse cliente aparece no Google Maps (um termo por linha)")}</Label>
@@ -397,8 +366,6 @@ export function NicheWizard({ niche, apifyTokenConfigured, onSaved, onCancel }: 
               <dl className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
                 <dt className="text-muted-foreground">{t("Nome")}</dt>
                 <dd>{payloadPreview.name || "—"}</dd>
-                <dt className="text-muted-foreground">{t("Serviço")}</dt>
-                <dd>{payloadPreview.serviceType || "—"}</dd>
                 <dt className="text-muted-foreground">{t("Termos de busca")}</dt>
                 <dd>{payloadPreview.searchTerms.join(", ") || "—"}</dd>
                 <dt className="text-muted-foreground">{t("Faixa de avaliações")}</dt>

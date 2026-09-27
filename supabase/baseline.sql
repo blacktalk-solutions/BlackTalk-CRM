@@ -23531,6 +23531,16 @@ alter table public.prospected_places
 comment on column public.prospected_places.oportunidade_pitch_status is
   'not_applicable = ninguém pediu ainda (gatilho MANUAL, ver app/api/v1/prospecting/places/[placeId]/pitch/route.ts); pending/processing/done/failed = ciclo de vida do worker de pitch. Mesmos 5 valores de site_analysis_status.';
 
+-- ---- nicho vira opcional na busca de prospecção (migration 0239) ----
+-- Ver o cabeçalho da migration 0239 para o raciocínio completo (achado
+-- validando em produção: a busca travava por inteiro sem nenhum nicho
+-- cadastrado, e "o que você vende" não bate com quem oferece o que a
+-- empresa precisar). `service_type` deixa de ser exigido no cadastro; dado
+-- antigo (nichos já cadastrados) fica intacto.
+
+alter table public.prospecting_niches
+  alter column service_type drop not null;
+
 -- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
 --
 -- ⚠️ ESTE BLOCO É, DE PROPÓSITO, O ÚLTIMO DO ARQUIVO. Apêndice novo entra ANTES

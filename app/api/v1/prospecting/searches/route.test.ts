@@ -7,7 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { fail } from "@/lib/api/wrappers";
 import { searchPlaces, PlacesApiError, type RawPlace } from "@/lib/prospecting/places-client";
-import { scoreInitial, type NicheWeights } from "@/lib/prospecting/score";
+import { PESOS_PADRAO, scoreInitial, type NicheWeights } from "@/lib/prospecting/score";
 import type { AuthUser } from "@/lib/auth/types";
 
 /**
@@ -17,7 +17,7 @@ import type { AuthUser } from "@/lib/auth/types";
  * Cobre: sucesso com mistura com/sem site (score usa os pesos do NICHO
  * escolhido, requisitos calculados, 3 eventos emitidos: site_quality só com
  * site, cnpj_requested pra 100%, instagram_requested só sem site e peso>0),
- * `nicheId` ausente → 400 `niche_required`, nicho de outra organização → 404,
+ * `nicheId` ausente → busca ad-hoc com `PESOS_PADRAO` (0239), nicho de outra organização → 404,
  * `requireRole` bloqueando role insuficiente, erro de Places API sem insert
  * parcial, zero resultados não é erro, body inválido → 422, falha no insert
  * de `prospected_places` desfaz `prospected_searches` (compensação, já que o
@@ -296,17 +296,28 @@ describe("POST /api/v1/prospecting/searches", () => {
     expect(createAdminClient).not.toHaveBeenCalled();
   });
 
-  it("sem nicheId → 400 niche_required, nunca chama a Places API nem o banco", async () => {
+  it("sem nicheId → busca funciona (0239): PESOS_PADRAO, sem requisito nenhum, niche_id null, nunca consulta prospecting_niches", async () => {
     mockAuthzOk();
-    const { POST } = await import("./route");
+    vi.mocked(searchPlaces).mockResolvedValue({
+      places: [PLACE_WITH_SITE],
+      placesApiCapped: false,
+    });
+    const { client, calls } = makeAdminStub({ insertPlacesResult: "echo" });
+    vi.mocked(createAdminClient).mockReturnValue(client as never);
 
+    const { POST } = await import("./route");
     const res = await POST(postReq({ businessType: "padaria", location: "São Paulo, SP" }));
 
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe("niche_required");
-    expect(searchPlaces).not.toHaveBeenCalled();
-    expect(createAdminClient).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      data: { places: Array<{ scoreInitial: number; requisitosOk: boolean }> };
+    };
+    const esperado = scoreInitial({ hasWebsite: true, rating: 4.2, reviewCount: 30 }, PESOS_PADRAO);
+    expect(body.data.places[0]?.scoreInitial).toBe(esperado.score);
+    expect(body.data.places[0]?.requisitosOk).toBe(true); // sem nicho, sem requirements, nada reprova
+
+    expect(calls.insertedSearch?.niche_id).toBeNull();
+    expect(searchPlaces).toHaveBeenCalled();
   });
 
   it("nicheId de outra organização (ou inexistente) → 404, nunca chama a Places API", async () => {

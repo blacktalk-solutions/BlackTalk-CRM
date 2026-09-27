@@ -41,7 +41,6 @@ export function NicheList({ niches, onEdit }: Props) {
             <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
               <div className="min-w-0">
                 <p className="truncate font-medium">{niche.name}</p>
-                <p className="truncate text-sm text-muted-foreground">{niche.serviceType}</p>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {niche.searchTerms.slice(0, 3).map((termo) => (
                     <Badge key={termo} variant="neutral">

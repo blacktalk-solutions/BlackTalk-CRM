@@ -1,0 +1,34 @@
+-- ============================================================================
+-- 0239 — NICHO DEIXA DE SER OBRIGATÓRIO NA BUSCA; `service_type` DEIXA DE
+-- SER COLETADO NO CADASTRO
+--
+-- Achado validando em produção (crm.blacktalk.com.br): o formulário de busca
+-- travava por inteiro sem nenhum nicho cadastrado — "a tela SHALL impedir
+-- buscar sem nicho escolhido" (0236/T14, spec.md P1 critério 6). Na prática
+-- isso forçava passar por um wizard de 4 passos ANTES de fazer a primeira
+-- busca, incluindo declarar "o que você vende" — um produto fixo por nicho,
+-- que não bate com quem prospecta pra diagnosticar e oferecer o que a
+-- empresa precisar, não um produto pré-decidido.
+--
+-- Dois cortes, nesta migration só o de schema:
+--
+-- 1. `prospecting_niches.service_type` vira opcional. A rota
+--    (`POST /api/v1/prospecting/niches`) já para de pedir o campo; dado
+--    antigo (nichos já cadastrados) fica intacto, só não é mais exigido em
+--    cadastro novo.
+-- 2. `prospected_searches.niche_id` já era nullable (0234) — a rota
+--    (`POST /api/v1/prospecting/searches`) é quem para de recusar
+--    `nicheId` ausente com `niche_required`; sem nicho, pesos caem no
+--    `PESOS_PADRAO` (lib/prospecting/score.ts, o mesmo já usado como
+--    sugestão no wizard) e requisitos ficam vazios (`{}`, que
+--    `checkRequirements` já trata como "nada reprova"). Nenhuma mudança de
+--    schema pro corte 2 — só de rota, então fica fora deste arquivo.
+--
+-- `search_terms` do nicho segue como estava: nunca foi de fato consumido na
+-- montagem da query (medido lendo `searches/route.ts` — só `businessType`
+-- digitado vai pra Places API), então autocomplete por nome do nicho não
+-- precisa de mudança de schema nenhuma pra existir.
+-- ============================================================================
+
+alter table public.prospecting_niches
+  alter column service_type drop not null;

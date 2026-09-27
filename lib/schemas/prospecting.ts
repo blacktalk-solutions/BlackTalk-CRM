@@ -64,7 +64,11 @@ export const nicheRequirementsSchema = z.object({
 /** `POST /api/v1/prospecting/niches` — todos os campos obrigatórios (criação). */
 export const prospectingNicheCreateSchema = z.object({
   name: z.string().min(1, "name é obrigatório").max(120),
-  serviceType: z.string().min(1, "serviceType é obrigatório").max(120),
+  // 0239: deixou de ser coletado no cadastro — um produto fixo por nicho não
+  // bate com quem oferece o que a empresa precisar, não um serviço
+  // pré-decidido. Campo mantido no schema (opcional) só pra não quebrar
+  // clientes de API antigos que ainda mandem o valor.
+  serviceType: z.string().max(120).optional(),
   searchTerms: z.array(z.string().min(1)).min(1, "ao menos um termo de busca é obrigatório"),
   requirements: nicheRequirementsSchema.optional().default({}),
   weights: nicheWeightsSchema,
