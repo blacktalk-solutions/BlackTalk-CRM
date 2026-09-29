@@ -102,7 +102,11 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8787/healthz"]
+      # Node puro, não `wget`: a imagem (`node:22-slim`) não tem `wget` — o
+      # healthcheck reportava "unhealthy" incondicionalmente (`exec: "wget":
+      # executable file not found`) mesmo com o processo saudável, porque
+      # nenhum node_modules resolve isso, é o binário do SO que falta.
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8787/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
